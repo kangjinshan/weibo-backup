@@ -356,18 +356,29 @@ body {
   margin-top: 12px;
   border-radius: var(--md-shape);
   overflow: hidden;
+  max-width: min(100%, 720px);
+  align-items: start;
 }
-.media-grid.cols-1 { grid-template-columns: 1fr; max-width: 400px; }
-.media-grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
-.media-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
-.media-grid.cols-4 { grid-template-columns: repeat(2, 1fr); }
-.media-grid.cols-5, .media-grid.cols-6 { grid-template-columns: repeat(3, 1fr); }
+.media-grid.cols-1 { grid-template-columns: 1fr; max-width: min(100%, 680px); }
+.media-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: min(100%, 560px); }
+.media-grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: min(100%, 660px); }
+.media-grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: min(100%, 560px); }
+.media-grid.cols-5, .media-grid.cols-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: min(100%, 660px); }
 .weibo-card .media-grid img {
-  width: 100%;
-  aspect-ratio: 1;
-  object-fit: cover;
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: min(60vh, 520px);
+  object-fit: contain;
+  background: #f8f9fa;
+  border-radius: var(--md-shape);
   cursor: pointer;
   transition: opacity 0.2s;
+}
+.weibo-card .media-grid:not(.cols-1) img {
+  width: 100%;
+  height: clamp(128px, 20vw, 220px);
 }
 .weibo-card .media-grid img:hover { opacity: 0.85; }
 .weibo-card .media-grid .video-thumb {
@@ -459,6 +470,7 @@ body {
 .lightbox-viewport {
   position: absolute;
   inset: 0;
+  padding: 72px 24px 32px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -467,8 +479,10 @@ body {
 }
 .lightbox-viewport.dragging { cursor: grabbing; }
 .lightbox img {
-  max-width: 90vw;
-  max-height: 90vh;
+  width: auto;
+  height: auto;
+  max-width: min(92vw, 1400px);
+  max-height: min(86vh, 1000px);
   object-fit: contain;
   border-radius: 8px;
   transform-origin: center center;
@@ -855,8 +869,11 @@ const API = '';
 let currentDate = new Date();
 let selectedDate = null;
 let currentPage = 1;
+let currentTotalPages = 0;
+let currentTotalItems = 0;
 let dateCounts = {};
 let autoRefreshTimer = null;
+let isLoadingWeibo = false;
 let lightboxScale = 1;
 let lightboxX = 0;
 let lightboxY = 0;
@@ -867,6 +884,28 @@ function currentMonthKey() {
   const year = currentDate.getFullYear();
   const month = String(currentDate.getMonth() + 1).padStart(2, '0');
   return `${year}-${month}`;
+}
+
+function monthKeysWithPosts() {
+  return [...new Set(Object.keys(dateCounts).map(date => date.slice(0, 7)))].sort();
+}
+
+function findAdjacentMonth(delta) {
+  const current = currentMonthKey();
+  const months = monthKeysWithPosts();
+  if (delta > 0) {
+    return months.find(month => month > current) || null;
+  }
+  return months.filter(month => month < current).pop() || null;
+}
+
+function hasAdjacentMonth(delta) {
+  return Boolean(findAdjacentMonth(delta));
+}
+
+function setMonthFromKey(monthKey) {
+  const [year, month] = monthKey.split('-').map(Number);
+  currentDate = new Date(year, month - 1, 1);
 }
 
 // --- API ---
@@ -1031,6 +1070,17 @@ function clearDateFilter() {
   document.getElementById('dateFilter').style.display = 'none';
   renderCalendar();
   loadWeibo();
+}
+
+async function jumpToAdjacentMonth(delta, targetEdge = 'first') {
+  const target = findAdjacentMonth(delta);
+  if (!target) return;
+  setMonthFromKey(target);
+  selectedDate = null;
+  currentPage = targetEdge === 'last' ? Number.MAX_SAFE_INTEGER : 1;
+  document.getElementById('dateFilter').style.display = 'none';
+  renderCalendar();
+  await loadWeibo({ scrollToFeed: true });
 }
 
 // --- Weibo Feed ---
@@ -1199,41 +1249,92 @@ function renderWeiboCard(weibo) {
   return html;
 }
 
-async function loadWeibo() {
+async function loadWeibo(options = {}) {
+  if (isLoadingWeibo) return;
+  isLoadingWeibo = true;
   const feed = document.getElementById('weiboFeed');
   feed.innerHTML = '<div class="loading"><span class="material-icons-outlined">sync</span><br>加载中...</div>';
 
-  let url = `/api/weibo?page=${currentPage}&per_page=20`;
-  const dateFilter = selectedDate || currentMonthKey();
-  if (dateFilter) url += `&date=${dateFilter}`;
+  try {
+    let url = `/api/weibo?page=${currentPage}&per_page=20`;
+    const dateFilter = selectedDate || currentMonthKey();
+    if (dateFilter) url += `&date=${dateFilter}`;
 
-  const data = await fetchJSON(url);
-  const weibos = data.weibo || [];
+    const data = await fetchJSON(url);
+    const total = data.total || 0;
+    const totalPages = Math.max(0, Math.ceil(total / 20));
 
-  if (weibos.length === 0) {
-    feed.innerHTML = '<div style="text-align:center;padding:40px;color:var(--md-on-surface-variant)">暂无微博数据</div>';
-  } else {
-    feed.innerHTML = weibos.map(renderWeiboCard).join('');
+    if (totalPages > 0 && currentPage > totalPages) {
+      currentPage = totalPages;
+      isLoadingWeibo = false;
+      await loadWeibo(options);
+      return;
+    }
+
+    const weibos = data.weibo || [];
+    currentTotalItems = total;
+    currentTotalPages = totalPages;
+
+    if (weibos.length === 0) {
+      feed.innerHTML = '<div style="text-align:center;padding:40px;color:var(--md-on-surface-variant)">暂无微博数据</div>';
+    } else {
+      feed.innerHTML = weibos.map(renderWeiboCard).join('');
+    }
+
+    renderPagination();
+
+    if (options.scrollToFeed) {
+      window.scrollTo({ top: document.querySelector('.feed-section').offsetTop - 80, behavior: 'smooth' });
+    }
+  } finally {
+    isLoadingWeibo = false;
   }
+}
 
-  // Pagination
-  const total = data.total || 0;
-  const totalPages = Math.ceil(total / 20);
+function renderPagination() {
   const pag = document.getElementById('pagination');
-  if (totalPages <= 1) {
+  const hasPrevPage = currentPage > 1;
+  const hasNextPage = currentTotalPages > 0 && currentPage < currentTotalPages;
+  const hasPrevMonth = !selectedDate && hasAdjacentMonth(-1);
+  const hasNextMonth = !selectedDate && hasAdjacentMonth(1);
+  const canGoPrev = hasPrevPage || hasPrevMonth;
+  const canGoNext = hasNextPage || hasNextMonth;
+
+  if (currentTotalPages <= 1 && !canGoPrev && !canGoNext) {
     pag.innerHTML = '';
     return;
   }
-  let pagHtml = `<button onclick="goPage(${currentPage - 1})" ${currentPage <= 1 ? 'disabled' : ''}>上一页</button>`;
-  pagHtml += `<span class="page-info">${currentPage} / ${totalPages} 页 (共${total}条)</span>`;
-  pagHtml += `<button onclick="goPage(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>下一页</button>`;
+
+  const prevLabel = hasPrevPage ? '上一页' : '上个月';
+  const nextLabel = hasNextPage ? '下一页' : '下个月';
+  const pageText = currentTotalPages > 0
+    ? `${currentPage} / ${currentTotalPages} 页 (共${currentTotalItems}条)`
+    : `本月暂无微博`;
+  let pagHtml = `<button onclick="navigatePage(-1)" ${canGoPrev ? '' : 'disabled'}>${prevLabel}</button>`;
+  pagHtml += `<span class="page-info">${pageText}</span>`;
+  pagHtml += `<button onclick="navigatePage(1)" ${canGoNext ? '' : 'disabled'}>${nextLabel}</button>`;
   pag.innerHTML = pagHtml;
 }
 
+async function navigatePage(delta) {
+  if (isLoadingWeibo) return;
+  const nextPage = currentPage + delta;
+  if (currentTotalPages > 0 && nextPage >= 1 && nextPage <= currentTotalPages) {
+    currentPage = nextPage;
+    await loadWeibo({ scrollToFeed: true });
+    return;
+  }
+  if (selectedDate) return;
+  if (delta < 0 && nextPage < 1) {
+    await jumpToAdjacentMonth(-1, 'last');
+  } else if (delta > 0 && nextPage > currentTotalPages) {
+    await jumpToAdjacentMonth(1, 'first');
+  }
+}
+
 function goPage(p) {
-  currentPage = p;
-  loadWeibo();
-  window.scrollTo({ top: document.querySelector('.feed-section').offsetTop - 80, behavior: 'smooth' });
+  const delta = p - currentPage;
+  if (delta) navigatePage(delta);
 }
 
 // --- Backup Settings ---
@@ -1390,12 +1491,25 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     closeLightbox();
     closeBackupModal();
-  } else if (document.getElementById('lightbox').classList.contains('active') && (e.key === '+' || e.key === '=')) {
+    return;
+  }
+  const lightboxActive = document.getElementById('lightbox').classList.contains('active');
+  if (lightboxActive && (e.key === '+' || e.key === '=')) {
     zoomLightbox(0.25);
-  } else if (document.getElementById('lightbox').classList.contains('active') && e.key === '-') {
+  } else if (lightboxActive && e.key === '-') {
     zoomLightbox(-0.25);
-  } else if (document.getElementById('lightbox').classList.contains('active') && e.key === '0') {
+  } else if (lightboxActive && e.key === '0') {
     resetLightboxZoom();
+  } else if (!lightboxActive && !document.getElementById('backupModal').classList.contains('active') && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    const target = e.target;
+    const isTyping = target && (
+      ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) ||
+      target.isContentEditable
+    );
+    if (!isTyping) {
+      e.preventDefault();
+      navigatePage(e.key === 'ArrowLeft' ? -1 : 1);
+    }
   }
 });
 

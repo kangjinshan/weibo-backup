@@ -126,6 +126,25 @@ class DashboardTests(unittest.TestCase):
         ]:
             self.assertIn(expected, html)
 
+    def test_keyboard_paging_month_boundary_and_adaptive_images_are_available(self):
+        html = (Path(__file__).parents[1] / "dashboard" / "static" / "index.html").read_text(encoding="utf-8")
+
+        for expected in [
+            "function navigatePage",
+            "function jumpToAdjacentMonth",
+            "hasAdjacentMonth(1)",
+            "hasAdjacentMonth(-1)",
+            "jumpToAdjacentMonth(1, 'first')",
+            "jumpToAdjacentMonth(-1, 'last')",
+            "e.key === 'ArrowLeft' || e.key === 'ArrowRight'",
+            "navigatePage(e.key === 'ArrowLeft' ? -1 : 1)",
+            "max-height: min(60vh, 520px)",
+            "max-width: min(92vw, 1400px)",
+            "max-height: min(86vh, 1000px)",
+            "object-fit: contain",
+        ]:
+            self.assertIn(expected, html)
+
     def test_sanitize_backup_config_normalizes_web_form_values(self):
         current = {
             "user_id_list": ["old"],
