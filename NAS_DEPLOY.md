@@ -79,6 +79,12 @@ docker run -d \
 http://NAS_IP:8765/
 ```
 
+默认镜像基于 `python:3.10-slim`。如果 NAS 拉取 DockerHub 较慢，可以先拉取可用镜像源里的 Alpine Python，再这样构建：
+
+```bash
+docker build --build-arg PYTHON_IMAGE=python:3.10-alpine -t weibo-backup-dashboard .
+```
+
 ## 不需要复制或提交的内容
 
 - `weiboSpider/config.json`

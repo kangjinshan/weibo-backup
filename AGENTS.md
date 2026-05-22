@@ -50,7 +50,7 @@
 
 - **Docker 部署**
   - 入口：`Dockerfile`
-  - 核心逻辑：构建 Python 3.10 运行环境，容器启动时执行 `scripts/start_dashboard.sh`
+  - 核心逻辑：构建 Python 3.10 运行环境，默认使用 `python:3.10-slim`，也支持通过 `PYTHON_IMAGE=python:3.10-alpine` 构建 Alpine 运行镜像；容器启动时执行 `scripts/start_dashboard.sh`
   - 副作用：生产运行时应通过 `-v "$PWD:/app"` 挂载项目目录，避免把真实数据打进镜像
 
 - **读取备份统计**

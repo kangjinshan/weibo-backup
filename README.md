@@ -94,6 +94,11 @@ docker run -d \
 ```
 
 容器会读取宿主机项目目录里的 `weiboSpider/config.json`、账号数据目录和 SQLite 数据库。
+默认镜像基于 `python:3.10-slim`。如果 NAS 拉取 DockerHub 较慢，也可以改用可用镜像源的 Alpine Python：
+
+```bash
+docker build --build-arg PYTHON_IMAGE=python:3.10-alpine -t weibo-backup-dashboard .
+```
 
 ## 常用环境变量
 
