@@ -1,0 +1,42 @@
+{
+    "user_id_list": [
+        "YOUR_WEIBO_USER_ID"
+    ],
+    "filter": 0,
+    "since_date": "2020-01-01",
+    "end_date": "now",
+    "random_wait_pages": [
+        2,
+        5
+    ],
+    "random_wait_seconds": [
+        8,
+        15
+    ],
+    "global_wait": [
+        [
+            500,
+            1800
+        ],
+        [
+            300,
+            1200
+        ]
+    ],
+    "write_mode": [
+        "csv",
+        "txt",
+        "json",
+        "sqlite"
+    ],
+    "pic_download": 1,
+    "video_download": 0,
+    "file_download_timeout": [
+        5,
+        5,
+        10
+    ],
+    "result_dir_name": 0,
+    "cookie": "PASTE_YOUR_WEIBO_COOKIE_HERE",
+    "sqlite_config": "../data/weibo.db"
+}

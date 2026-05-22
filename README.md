@@ -1,0 +1,116 @@
+# weibo-backup
+
+本项目是一个本地微博备份与监控工作区：用 `weiboSpider` 抓取微博内容、图片和视频，用 FastAPI 网页查看备份进度、配置增量备份、浏览本地微博归档。
+
+仓库不包含任何已下载的微博数据、图片、视频、SQLite 数据库或真实 cookie。下载后先创建自己的 `weiboSpider/config.json`，再运行备份。
+
+## 功能
+
+- 在网页弹层里配置账号、日期范围、是否下载图片/视频。
+- 启动、暂停、继续、停止微博备份进程。
+- 查看备份进度、日期日历、微博列表、本地图片和视频。
+- 支持图片点击预览、缩放、点空白关闭。
+- 支持微博昵称主页链接和微博详情链接。
+- 支持在 NAS 或普通 Linux/macOS 机器上创建独立 Python 环境部署。
+
+## 目录结构
+
+| 路径 | 说明 |
+| --- | --- |
+| `dashboard/` | FastAPI 监控后台与静态页面 |
+| `weiboSpider/` | 微博爬虫主体，含 `weibo_spider` 包和示例配置 |
+| `scripts/` | 环境初始化和后台启动脚本 |
+| `tests/` | 本项目回归测试 |
+| `data/` | 默认 SQLite 数据目录，仓库只保留 `.gitkeep` |
+| `logs/` | 运行日志目录，仓库只保留 `.gitkeep` |
+
+真实备份运行后，`weiboSpider` 会按账号昵称在项目根目录生成账号目录，例如：
+
+```text
+某微博昵称/
+  1234567890.json
+  1234567890.csv
+  1234567890.txt
+  img/
+  video/
+data/
+  weibo.db
+```
+
+这些数据目录和资源文件都已被 `.gitignore` 排除。
+
+## 快速部署
+
+1. 创建环境并生成本地配置：
+
+```bash
+bash scripts/setup_nas.sh
+```
+
+2. 编辑 `weiboSpider/config.json`：
+
+```json
+{
+  "user_id_list": ["你的微博用户ID"],
+  "cookie": "你的微博 cookie",
+  "sqlite_config": "../data/weibo.db"
+}
+```
+
+保留 `write_mode` 中的 `sqlite`，否则网页无法从 SQLite 读取新微博。
+
+3. 启动监控后台：
+
+```bash
+bash scripts/start_dashboard.sh
+```
+
+默认监听：
+
+```text
+0.0.0.0:8765
+```
+
+打开：
+
+```text
+http://127.0.0.1:8765/
+```
+
+## 常用环境变量
+
+```bash
+WEIBO_DASHBOARD_HOST=0.0.0.0
+WEIBO_DASHBOARD_PORT=8765
+WEIBO_BACKUP_DIR=/path/to/weibo-backup
+WEIBO_SPIDER_PYTHON=/path/to/weibo-backup/.venv/bin/python
+```
+
+## 数据同步
+
+网页 API 读取 `weiboSpider/config.json` 中的 `sqlite_config`。默认示例配置使用：
+
+```text
+../data/weibo.db
+```
+
+如果手工修改了账号目录里的 `{user_id}.json`，可以用 JSON 重建 SQLite：
+
+```bash
+python3 sync_sqlite_from_json.py
+```
+
+## 测试
+
+```bash
+python3 -m unittest tests/test_sqlite_store.py tests/test_backup_paths.py tests/test_dashboard.py tests/test_sqlite_writer.py
+python3 -m py_compile sqlite_store.py sync_sqlite_from_json.py backup_paths.py dashboard/server.py
+bash -n scripts/setup_nas.sh scripts/start_dashboard.sh
+```
+
+## 注意事项
+
+- 不要提交 `weiboSpider/config.json`，里面通常包含微博 cookie。
+- 不要提交账号目录、`data/*.db`、`img/`、`video/`、`logs/` 和本机虚拟环境。
+- 新机器不要复用复制来的旧 `dashboard/venv/` 或 `weiboSpider/venv/`，运行 `scripts/setup_nas.sh` 重新创建根目录 `.venv`。
+- 备份默认以当前已备份的最近一天作为开始日期，以今天作为结束日期，适合每天做增量备份。

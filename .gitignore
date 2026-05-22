@@ -1,0 +1,52 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+dashboard/venv/
+weiboSpider/venv/
+
+# macOS and editor noise
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime logs and process files
+logs/*
+!logs/.gitkeep
+*.log
+*.pid
+*.tmp
+*.part
+
+# Private crawler configuration and backups
+weiboSpider/config.json
+weiboSpider/config.before-*.json
+
+# Downloaded archive data and media
+data/*
+!data/.gitkeep
+*/img/
+*/video/
+/*/[0-9]*.json
+/*/[0-9]*.csv
+/*/[0-9]*.txt
+/*/[0-9]*.db
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.txt
+
+# Keep source-controlled text files under known source/doc directories.
+!README.md
+!AGENTS.md
+!NAS_DEPLOY.md
+!requirements-nas.txt
+!dashboard/requirements.txt
+!weiboSpider/README.md
+!weiboSpider/requirements.txt
+!weiboSpider/weibo_spider/user_id_list.txt
+!weiboSpider/docs/*.txt
+!weiboSpider/docs/*.md
+!tests/*.txt
