@@ -18,3 +18,5 @@ data/*
 *.sqlite3
 *.csv
 *.txt
+!requirements-nas.txt
+!weiboSpider/weibo_spider/user_id_list.txt
