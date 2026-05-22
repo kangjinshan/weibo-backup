@@ -302,6 +302,50 @@ body {
   font-size: 16px; font-weight: 500; margin-bottom: 16px;
   display: flex; align-items: center; gap: 8px;
 }
+.feed-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.filter-label {
+  font-size: 13px;
+  color: var(--md-on-surface-variant);
+}
+.segmented-control {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--md-outline);
+  border-radius: 8px;
+  background: var(--md-surface);
+}
+.segmented-control button {
+  min-height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--md-on-surface-variant);
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.segmented-control button:hover {
+  background: #f1f3f4;
+  color: var(--md-on-surface);
+}
+.segmented-control button.active {
+  background: #e8f0fe;
+  color: var(--md-primary);
+  font-weight: 500;
+}
 .weibo-card {
   background: var(--md-surface);
   border-radius: var(--md-shape-lg);
@@ -683,6 +727,13 @@ body {
   .top-bar h1 { font-size: 18px; }
   .top-actions { gap: 8px; }
   .settings-grid { grid-template-columns: 1fr; }
+  .feed-toolbar { align-items: stretch; }
+  .filter-group { width: 100%; align-items: flex-start; flex-direction: column; }
+  .segmented-control {
+    width: 100%;
+    overflow-x: auto;
+  }
+  .segmented-control button { white-space: nowrap; }
   .lightbox-toolbar {
     top: 10px;
     right: 10px;
@@ -788,6 +839,24 @@ body {
         <span class="material-icons-outlined">close</span>
       </span>
     </h2>
+    <div class="feed-toolbar">
+      <div class="filter-group">
+        <span class="filter-label">微博</span>
+        <div class="segmented-control" id="postTypeFilter">
+          <button class="active" data-value="all" onclick="setPostTypeFilter('all')">全部</button>
+          <button data-value="original" onclick="setPostTypeFilter('original')">仅原创</button>
+        </div>
+      </div>
+      <div class="filter-group">
+        <span class="filter-label">类型</span>
+        <div class="segmented-control" id="mediaTypeFilter">
+          <button class="active" data-value="all" onclick="setMediaTypeFilter('all')">全部</button>
+          <button data-value="text" onclick="setMediaTypeFilter('text')">纯文字</button>
+          <button data-value="text_image" onclick="setMediaTypeFilter('text_image')">文字+图片</button>
+          <button data-value="text_image_video" onclick="setMediaTypeFilter('text_image_video')">文字+图片+视频</button>
+        </div>
+      </div>
+    </div>
     <div id="weiboFeed"></div>
     <div class="pagination" id="pagination"></div>
   </div>
@@ -871,6 +940,8 @@ let selectedDate = null;
 let currentPage = 1;
 let currentTotalPages = 0;
 let currentTotalItems = 0;
+let postTypeFilter = 'all';
+let mediaTypeFilter = 'all';
 let dateCounts = {};
 let autoRefreshTimer = null;
 let isLoadingWeibo = false;
@@ -1072,6 +1143,29 @@ function clearDateFilter() {
   loadWeibo();
 }
 
+function setActiveSegment(groupId, value) {
+  document.querySelectorAll(`#${groupId} button`).forEach(button => {
+    button.classList.toggle('active', button.dataset.value === value);
+  });
+}
+
+function applyFeedFilters() {
+  currentPage = 1;
+  setActiveSegment('postTypeFilter', postTypeFilter);
+  setActiveSegment('mediaTypeFilter', mediaTypeFilter);
+  loadWeibo({ scrollToFeed: true });
+}
+
+function setPostTypeFilter(value) {
+  postTypeFilter = value;
+  applyFeedFilters();
+}
+
+function setMediaTypeFilter(value) {
+  mediaTypeFilter = value;
+  applyFeedFilters();
+}
+
 async function jumpToAdjacentMonth(delta, targetEdge = 'first') {
   const target = findAdjacentMonth(delta);
   if (!target) return;
@@ -1259,6 +1353,7 @@ async function loadWeibo(options = {}) {
     let url = `/api/weibo?page=${currentPage}&per_page=20`;
     const dateFilter = selectedDate || currentMonthKey();
     if (dateFilter) url += `&date=${dateFilter}`;
+    url += `&post_type=${encodeURIComponent(postTypeFilter)}&media_type=${encodeURIComponent(mediaTypeFilter)}`;
 
     const data = await fetchJSON(url);
     const total = data.total || 0;

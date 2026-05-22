@@ -244,16 +244,49 @@ def date_counts(db_path: Path) -> dict[str, int]:
     return {str(day): int(count) for day, count in rows}
 
 
-def fetch_weibos(db_path: Path, page: int = 1, per_page: int = 20, date: str | None = None) -> tuple[list[dict[str, Any]], int]:
+def fetch_weibos(
+    db_path: Path,
+    page: int = 1,
+    per_page: int = 20,
+    date: str | None = None,
+    post_type: str = "all",
+    media_type: str = "all",
+) -> tuple[list[dict[str, Any]], int]:
     ensure_schema(db_path)
     page = max(1, int(page))
     per_page = max(1, int(per_page))
     offset = (page - 1) * per_page
-    where = ""
+    clauses = []
     params: list[Any] = []
     if date:
-        where = "WHERE publish_time LIKE ?"
+        clauses.append("publish_time LIKE ?")
         params.append(f"{date}%")
+    if post_type == "original":
+        clauses.append("original = 1")
+
+    has_images = """
+        (
+            COALESCE(original_pictures_list, '') NOT IN ('', '[]', 'null')
+            OR COALESCE(retweet_pictures_list, '') NOT IN ('', '[]', 'null')
+        )
+    """
+    has_video = """
+        (
+            COALESCE(video_url, '') NOT IN ('', '无', 'null')
+            OR COALESCE(media, '') LIKE '%"video"%'
+        )
+    """
+    if media_type == "text":
+        clauses.append(f"NOT {has_images}")
+        clauses.append(f"NOT {has_video}")
+    elif media_type == "text_image":
+        clauses.append(has_images)
+        clauses.append(f"NOT {has_video}")
+    elif media_type == "text_image_video":
+        clauses.append(has_images)
+        clauses.append(has_video)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with closing(sqlite3.connect(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         total = int(connection.execute(f"SELECT COUNT(*) FROM weibo {where}", params).fetchone()[0])

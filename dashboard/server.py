@@ -353,8 +353,21 @@ def get_user_info():
         return {}
 
 
-def read_weibos_page(page: int = 1, per_page: int = 20, date: Optional[str] = None):
-    return sqlite_fetch_weibos(sqlite_db_path(), page=page, per_page=per_page, date=date)
+def read_weibos_page(
+    page: int = 1,
+    per_page: int = 20,
+    date: Optional[str] = None,
+    post_type: str = "all",
+    media_type: str = "all",
+):
+    return sqlite_fetch_weibos(
+        sqlite_db_path(),
+        page=page,
+        per_page=per_page,
+        date=date,
+        post_type=post_type,
+        media_type=media_type,
+    )
 
 
 def get_local_video_url(user_dir: Path, weibo: dict):
@@ -481,9 +494,25 @@ async def spider_status():
 
 
 @app.get("/api/weibo")
-async def weibo_list(page: int = 1, per_page: int = 20, date: Optional[str] = None):
+async def weibo_list(
+    page: int = 1,
+    per_page: int = 20,
+    date: Optional[str] = None,
+    post_type: str = "all",
+    media_type: str = "all",
+):
     try:
-        weibos, total = read_weibos_page(page=page, per_page=per_page, date=date)
+        if post_type not in {"all", "original"}:
+            post_type = "all"
+        if media_type not in {"all", "text", "text_image", "text_image_video"}:
+            media_type = "all"
+        weibos, total = read_weibos_page(
+            page=page,
+            per_page=per_page,
+            date=date,
+            post_type=post_type,
+            media_type=media_type,
+        )
     except Exception:
         return JSONResponse({"weibo": [], "total": 0, "page": page})
 

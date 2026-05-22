@@ -25,7 +25,7 @@
 | 目录 | 职责 | 关键说明 |
 | --- | --- | --- |
 | `dashboard/` | 监控后台与 API | `server.py` 暴露统计、微博列表、媒体文件、备份配置和进程控制接口 |
-| `dashboard/static/` | 单页监控界面 | `index.html` 内含日历、微博列表、备份弹层、图片灯箱和自动刷新逻辑 |
+| `dashboard/static/` | 单页监控界面 | `index.html` 内含日历、微博列表筛选、备份弹层、图片灯箱和自动刷新逻辑 |
 | `weiboSpider/` | 微博爬虫主体 | 包含上游爬虫源码、示例配置和写入逻辑；`config.json` 为本地私密文件，不提交 |
 | `weiboSpider/weibo_spider/` | 抓取、解析、下载、写入核心包 | `spider.py` 调度解析器、下载器和 writers |
 | `scripts/` | 部署与启动脚本 | `setup_nas.sh` 创建根 `.venv`；`start_dashboard.sh` 启动 Uvicorn |
@@ -55,7 +55,7 @@
 - **浏览微博列表**
   - 入口：`GET /api/weibo` -> `dashboard.server.weibo_list`
   - 核心逻辑：`sqlite_store.fetch_weibos()`、`with_local_media_urls()`
-  - 副作用：根据 `publish_time` 正序返回，并给图片/视频补本地 `/media/...` URL
+  - 副作用：根据 `publish_time` 正序返回，支持 `post_type` 和 `media_type` 筛选，并给图片/视频补本地 `/media/...` URL
 
 - **访问本地媒体文件**
   - 入口：`GET /media/{media_path:path}` -> `dashboard.server.media`

@@ -145,6 +145,21 @@ class DashboardTests(unittest.TestCase):
         ]:
             self.assertIn(expected, html)
 
+    def test_feed_filters_are_available(self):
+        html = (Path(__file__).parents[1] / "dashboard" / "static" / "index.html").read_text(encoding="utf-8")
+
+        for expected in [
+            "id=\"postTypeFilter\"",
+            "setPostTypeFilter('original')",
+            "id=\"mediaTypeFilter\"",
+            "setMediaTypeFilter('text')",
+            "setMediaTypeFilter('text_image')",
+            "setMediaTypeFilter('text_image_video')",
+            "post_type=${encodeURIComponent(postTypeFilter)}",
+            "media_type=${encodeURIComponent(mediaTypeFilter)}",
+        ]:
+            self.assertIn(expected, html)
+
     def test_sanitize_backup_config_normalizes_web_form_values(self):
         current = {
             "user_id_list": ["old"],
