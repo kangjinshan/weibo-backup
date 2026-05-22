@@ -78,6 +78,23 @@ bash scripts/start_dashboard.sh
 http://127.0.0.1:8765/
 ```
 
+## Docker 部署
+
+NAS 上如果系统 Python 太旧，推荐用 Docker：
+
+```bash
+docker build -t weibo-backup-dashboard .
+docker run -d \
+  --name weibo-backup-dashboard \
+  --restart unless-stopped \
+  -p 8765:8765 \
+  -v "$PWD:/app" \
+  -w /app \
+  weibo-backup-dashboard
+```
+
+容器会读取宿主机项目目录里的 `weiboSpider/config.json`、账号数据目录和 SQLite 数据库。
+
 ## 常用环境变量
 
 ```bash

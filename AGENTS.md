@@ -32,6 +32,7 @@
 | `tests/` | 回归测试 | 覆盖后台配置、列表排序、媒体同步、SQLite 迁移和 writer 兼容 |
 | `data/` | 默认数据库目录 | 只提交 `.gitkeep`；真实 `*.db` 不提交 |
 | `logs/` | 运行日志目录 | 只提交 `.gitkeep`；真实日志不提交 |
+| `Dockerfile` | 容器部署 | 只安装依赖；运行时挂载项目目录到 `/app` |
 
 本地虚拟环境如 `.venv/`、`dashboard/venv/`、`weiboSpider/venv/` 都是可重建依赖产物，不应作为源码维护。
 
@@ -46,6 +47,11 @@
   - 入口：`scripts/start_dashboard.sh`
   - 核心逻辑：启动 `dashboard.server:app`
   - 副作用：监听 `WEIBO_DASHBOARD_HOST` / `WEIBO_DASHBOARD_PORT`，读取 `WEIBO_BACKUP_DIR`
+
+- **Docker 部署**
+  - 入口：`Dockerfile`
+  - 核心逻辑：构建 Python 3.10 运行环境，容器启动时执行 `scripts/start_dashboard.sh`
+  - 副作用：生产运行时应通过 `-v "$PWD:/app"` 挂载项目目录，避免把真实数据打进镜像
 
 - **读取备份统计**
   - 入口：`GET /api/stats` -> `dashboard.server.stats`

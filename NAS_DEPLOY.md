@@ -56,6 +56,29 @@ curl http://127.0.0.1:8765/api/stats
 curl http://127.0.0.1:8765/api/backup-config
 ```
 
+## Docker 启动
+
+如果 NAS 自带 Python 版本太旧或缺少 SQLite 模块，可以用 Docker：
+
+```bash
+cd /path/to/weibo-backup
+docker build -t weibo-backup-dashboard .
+docker rm -f weibo-backup-dashboard 2>/dev/null || true
+docker run -d \
+  --name weibo-backup-dashboard \
+  --restart unless-stopped \
+  -p 8765:8765 \
+  -v "$PWD:/app" \
+  -w /app \
+  weibo-backup-dashboard
+```
+
+访问：
+
+```text
+http://NAS_IP:8765/
+```
+
 ## 不需要复制或提交的内容
 
 - `weiboSpider/config.json`
