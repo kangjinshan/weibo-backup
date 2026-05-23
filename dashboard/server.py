@@ -40,7 +40,6 @@ BACKUP_LOG_PATH = LOGS_DIR / "backup-run.log"
 SPIDER_PYTHON_ENV = os.environ.get("WEIBO_SPIDER_PYTHON")
 SPIDER_PYTHON = Path(SPIDER_PYTHON_ENV).expanduser() if SPIDER_PYTHON_ENV else None
 ROOT_VENV_PYTHON = BACKUP_DIR / ".venv" / "bin" / "python"
-SPIDER_VENV_PYTHON = SPIDER_DIR / "venv" / "bin" / "python"
 EXCLUDED_DATA_DIRS = {
     "__pycache__",
     "archive",
@@ -50,6 +49,15 @@ EXCLUDED_DATA_DIRS = {
     "scripts",
     "tests",
     "weiboSpider",
+}
+COOKIE_PLACEHOLDER_FRAGMENTS = (
+    "PASTE_YOUR_WEIBO_COOKIE",
+    "YOUR_WEIBO_COOKIE",
+    "你的微博 COOKIE",
+)
+USER_ID_PLACEHOLDER_VALUES = {
+    "YOUR_WEIBO_USER_ID",
+    "你的微博用户ID",
 }
 
 
@@ -82,6 +90,30 @@ def read_json_data():
 
 def read_backup_config():
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+
+
+def cookie_is_configured(config: dict) -> bool:
+    cookie = str(config.get("cookie") or "").strip()
+    if not cookie or "=" not in cookie:
+        return False
+    normalized = cookie.upper()
+    return not any(fragment in normalized for fragment in COOKIE_PLACEHOLDER_FRAGMENTS)
+
+
+def user_ids_are_configured(config: dict) -> bool:
+    user_ids = parse_user_ids(config.get("user_id_list"))
+    if not user_ids:
+        return False
+    return not any(user_id in USER_ID_PLACEHOLDER_VALUES for user_id in user_ids)
+
+
+def backup_config_issues(config: dict) -> list[str]:
+    issues = []
+    if not user_ids_are_configured(config):
+        issues.append("账号 ID 未配置或仍是示例值，请先填写 user_id_list")
+    if not cookie_is_configured(config):
+        issues.append("cookie 未配置或仍是示例值，请在 NAS 的 weiboSpider/config.json 中填写有效微博 cookie")
+    return issues
 
 
 def sqlite_db_path():
@@ -126,6 +158,10 @@ def sanitize_backup_config(incoming: dict, current: dict) -> dict:
         write_mode = incoming.get("write_mode")
         if isinstance(write_mode, list) and write_mode:
             config["write_mode"] = [str(v).strip() for v in write_mode if str(v).strip()]
+    if "cookie" in incoming:
+        cookie = str(incoming.get("cookie") or "").strip()
+        if cookie:
+            config["cookie"] = cookie
     return config
 
 
@@ -210,12 +246,31 @@ def ensure_logs_dir():
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def executable_file(path: Optional[Path]) -> bool:
+    return bool(path and path.is_file() and os.access(path, os.X_OK))
+
+
+def usable_python(path: Optional[Path]) -> bool:
+    if not executable_file(path):
+        return False
+    try:
+        result = subprocess.run(
+            [str(path), "-c", "import sys"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def spider_command():
     python = next(
         (
             candidate
-            for candidate in [SPIDER_PYTHON, ROOT_VENV_PYTHON, SPIDER_VENV_PYTHON]
-            if candidate and candidate.is_file()
+            for candidate in [SPIDER_PYTHON, Path(sys.executable), ROOT_VENV_PYTHON]
+            if usable_python(candidate)
         ),
         Path(sys.executable),
     )
@@ -543,6 +598,7 @@ async def user_info():
 async def backup_config():
     config = read_backup_config()
     default_dates = incremental_backup_dates(config)
+    issues = backup_config_issues(config)
     return JSONResponse(
         {
             "user_id_list": config.get("user_id_list", []),
@@ -551,6 +607,8 @@ async def backup_config():
             "pic_download": bool(config.get("pic_download")),
             "video_download": bool(config.get("video_download")),
             "write_mode": config.get("write_mode", ["csv", "txt", "json", "sqlite"]),
+            "cookie_configured": cookie_is_configured(config),
+            "config_issues": issues,
             "status": get_backup_process_status(),
         }
     )
@@ -566,7 +624,14 @@ async def save_backup_config(payload: dict):
     )
     backup_path.write_bytes(CONFIG_PATH.read_bytes())
     write_json_atomic(CONFIG_PATH, next_config)
-    return JSONResponse({"ok": True, "backup_path": str(backup_path)})
+    return JSONResponse(
+        {
+            "ok": True,
+            "backup_path": str(backup_path),
+            "cookie_configured": cookie_is_configured(next_config),
+            "config_issues": backup_config_issues(next_config),
+        }
+    )
 
 
 @app.post("/api/backup/start")
@@ -574,16 +639,41 @@ async def start_backup():
     status = get_backup_process_status()
     if status["running"]:
         return JSONResponse({"ok": False, "status": status, "message": "backup already running"})
+    try:
+        config = read_backup_config()
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "message": f"启动失败：无法读取 weiboSpider/config.json：{exc}"},
+            status_code=400,
+        )
+    issues = backup_config_issues(config)
+    if issues:
+        return JSONResponse(
+            {"ok": False, "message": "启动失败：" + "；".join(issues), "config_issues": issues},
+            status_code=400,
+        )
     ensure_logs_dir()
-    log_fh = BACKUP_LOG_PATH.open("ab")
-    process = subprocess.Popen(
-        spider_command(),
-        cwd=str(SPIDER_DIR),
-        stdout=log_fh,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    log_fh.close()
+    command = spider_command()
+    try:
+        with BACKUP_LOG_PATH.open("ab") as log_fh:
+            process = subprocess.Popen(
+                command,
+                cwd=str(SPIDER_DIR),
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": f"启动失败：{exc}",
+                "command": command,
+                "cwd": str(SPIDER_DIR),
+                "log_path": str(BACKUP_LOG_PATH),
+            },
+            status_code=500,
+        )
     BACKUP_PID_PATH.write_text(str(process.pid) + "\n", encoding="utf-8")
     return JSONResponse({"ok": True, "pid": process.pid, "log_path": str(BACKUP_LOG_PATH)})
 

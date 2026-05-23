@@ -620,7 +620,8 @@ body {
   font-size: 13px;
   color: var(--md-on-surface-variant);
 }
-.field input {
+.field input,
+.field textarea {
   width: 100%;
   min-height: 42px;
   border: 1px solid var(--md-outline);
@@ -630,7 +631,12 @@ body {
   color: var(--md-on-surface);
   background: #fff;
 }
-.field input:focus {
+.field textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+.field input:focus,
+.field textarea:focus {
   border-color: var(--md-primary);
   outline: none;
   box-shadow: 0 0 0 2px rgba(26,115,232,.16);
@@ -890,6 +896,14 @@ body {
           <label for="configUserIds">账号 ID</label>
           <input id="configUserIds" type="text" autocomplete="off">
         </div>
+        <div class="field full">
+          <label for="configCookieStatus">Cookie 状态</label>
+          <input id="configCookieStatus" type="text" readonly>
+        </div>
+        <div class="field full">
+          <label for="configCookieInput">更新 Cookie</label>
+          <textarea id="configCookieInput" autocomplete="off" placeholder="粘贴新的微博 Cookie；留空则保持当前 Cookie"></textarea>
+        </div>
         <div class="field">
           <label for="configSinceDate">开始日期</label>
           <input id="configSinceDate" type="date">
@@ -982,7 +996,7 @@ function setMonthFromKey(monthKey) {
 // --- API ---
 async function fetchJSON(url) {
   const r = await fetch(API + url);
-  return r.json();
+  return parseJSONResponse(r);
 }
 
 async function postJSON(url, payload = {}) {
@@ -991,7 +1005,23 @@ async function postJSON(url, payload = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  return r.json();
+  return parseJSONResponse(r);
+}
+
+async function parseJSONResponse(response) {
+  const text = await response.text();
+  let payload;
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch (_) {
+    const message = text.trim() || `HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  if (!response.ok && !payload.message) {
+    const message = payload.detail || `HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return payload;
 }
 
 // --- Stats & Status ---
@@ -1441,6 +1471,8 @@ function showBackupFeedback(message, type = '') {
 
 function fillBackupConfig(config) {
   document.getElementById('configUserIds').value = (config.user_id_list || []).join(', ');
+  document.getElementById('configCookieStatus').value = config.cookie_configured ? '已配置' : '未配置或仍是示例值';
+  document.getElementById('configCookieInput').value = '';
   document.getElementById('configSinceDate').value = config.since_date || '';
   document.getElementById('configEndDate').value = config.end_date || 'now';
   document.getElementById('configPicDownload').checked = Boolean(config.pic_download);
@@ -1449,13 +1481,16 @@ function fillBackupConfig(config) {
 }
 
 function collectBackupConfig() {
-  return {
+  const payload = {
     user_id_list: document.getElementById('configUserIds').value,
     since_date: document.getElementById('configSinceDate').value,
     end_date: document.getElementById('configEndDate').value,
     pic_download: document.getElementById('configPicDownload').checked,
     video_download: document.getElementById('configVideoDownload').checked,
   };
+  const cookie = document.getElementById('configCookieInput').value.trim();
+  if (cookie) payload.cookie = cookie;
+  return payload;
 }
 
 async function loadBackupConfig() {
@@ -1468,7 +1503,8 @@ async function loadBackupConfig() {
       : config.status?.running
         ? '当前状态：备份中'
         : '当前状态：已停止';
-    showBackupFeedback(statusText);
+    const issues = config.config_issues || [];
+    showBackupFeedback(issues.length ? issues.join('；') : statusText, issues.length ? 'error' : '');
   } catch (err) {
     showBackupFeedback(`读取失败：${err.message}`, 'error');
   }
@@ -1491,7 +1527,12 @@ async function saveBackupConfig(options = {}) {
       showBackupFeedback(result.message || '保存失败', 'error');
       return false;
     }
-    if (!options.silent) showBackupFeedback('配置已保存', 'success');
+    document.getElementById('configCookieInput').value = '';
+    document.getElementById('configCookieStatus').value = result.cookie_configured ? '已配置' : '未配置或仍是示例值';
+    if (!options.silent) {
+      const issues = result.config_issues || [];
+      showBackupFeedback(issues.length ? `配置已保存；${issues.join('；')}` : '配置已保存', issues.length ? 'error' : 'success');
+    }
     return true;
   } catch (err) {
     showBackupFeedback(`保存失败：${err.message}`, 'error');

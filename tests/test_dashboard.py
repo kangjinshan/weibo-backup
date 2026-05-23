@@ -26,8 +26,9 @@ class _FakeFastAPI:
 
 
 class _FakeJSONResponse:
-    def __init__(self, content):
+    def __init__(self, content, status_code=200):
         self.body = json.dumps(content).encode("utf-8")
+        self.status_code = status_code
 
 
 fastapi_module = types.ModuleType("fastapi")
@@ -94,6 +95,8 @@ class DashboardTests(unittest.TestCase):
         for expected in [
             "id=\"backupModal\"",
             "id=\"configUserIds\"",
+            "id=\"configCookieStatus\"",
+            "id=\"configCookieInput\"",
             "id=\"configSinceDate\"",
             "id=\"configEndDate\"",
             "id=\"configPicDownload\"",
@@ -103,6 +106,17 @@ class DashboardTests(unittest.TestCase):
             "startBackupFromModal",
             "backupAction('pause')",
             "backupAction('stop')",
+        ]:
+            self.assertIn(expected, html)
+
+    def test_api_helpers_report_non_json_errors(self):
+        html = (Path(__file__).parents[1] / "dashboard" / "static" / "index.html").read_text(encoding="utf-8")
+
+        for expected in [
+            "async function parseJSONResponse",
+            "await response.text()",
+            "response.ok",
+            "throw new Error(message)",
         ]:
             self.assertIn(expected, html)
 
@@ -189,6 +203,21 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(normalized["write_mode"], current["write_mode"])
         self.assertEqual(normalized["cookie"], "keep-cookie")
 
+    def test_sanitize_backup_config_updates_cookie_only_when_provided(self):
+        current = {
+            "user_id_list": ["123"],
+            "cookie": "SUB=old-cookie",
+        }
+
+        self.assertEqual(
+            server.sanitize_backup_config({"cookie": "   "}, current)["cookie"],
+            "SUB=old-cookie",
+        )
+        self.assertEqual(
+            server.sanitize_backup_config({"cookie": "SUB=new-cookie"}, current)["cookie"],
+            "SUB=new-cookie",
+        )
+
     def test_sanitize_backup_config_uses_now_for_today_end_date(self):
         current = {
             "user_id_list": ["old"],
@@ -225,6 +254,7 @@ class DashboardTests(unittest.TestCase):
             "write_mode": ["csv", "txt", "json", "sqlite"],
             "pic_download": 1,
             "video_download": 0,
+            "cookie": "SUB=valid-cookie",
         }
         with (
             patch.object(server, "read_backup_config", return_value=current_config),
@@ -237,14 +267,136 @@ class DashboardTests(unittest.TestCase):
         payload = json.loads(response.body)
         self.assertEqual(payload["since_date"], "2020-03-04")
         self.assertEqual(payload["end_date"], "2026-05-22")
+        self.assertTrue(payload["cookie_configured"])
+        self.assertEqual(payload["config_issues"], [])
+
+    def test_backup_config_reports_placeholder_cookie_without_exposing_value(self):
+        current_config = {
+            "user_id_list": ["1234567890"],
+            "since_date": "2010-01-01",
+            "end_date": "now",
+            "write_mode": ["csv", "txt", "json", "sqlite"],
+            "pic_download": 1,
+            "video_download": 0,
+            "cookie": "PASTE_YOUR_WEIBO_COOKIE_HERE",
+        }
+
+        with (
+            patch.object(server, "read_backup_config", return_value=current_config),
+            patch.object(server, "latest_backed_up_date", return_value=None),
+            patch.object(server, "today_string", return_value="2026-05-22", create=True),
+            patch.object(server, "get_backup_process_status", return_value={"running": False, "status": "stopped", "pid": None}),
+        ):
+            response = asyncio.run(server.backup_config())
+
+        payload = json.loads(response.body)
+        self.assertFalse(payload["cookie_configured"])
+        self.assertIn("cookie", payload["config_issues"][0])
+        self.assertNotIn("PASTE_YOUR_WEIBO_COOKIE_HERE", response.body.decode("utf-8"))
+
+    def test_start_backup_refuses_to_run_without_configured_cookie(self):
+        current_config = {
+            "user_id_list": ["1234567890"],
+            "cookie": "PASTE_YOUR_WEIBO_COOKIE_HERE",
+            "write_mode": ["csv", "txt", "json", "sqlite"],
+        }
+
+        with (
+            patch.object(server, "read_backup_config", return_value=current_config),
+            patch.object(server, "get_backup_process_status", return_value={"running": False, "status": "stopped", "pid": None}),
+            patch.object(server.subprocess, "Popen") as popen,
+        ):
+            response = asyncio.run(server.start_backup())
+
+        payload = json.loads(response.body)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(payload["ok"])
+        self.assertIn("cookie", payload["message"])
+        self.assertFalse(popen.called)
+
+    def test_save_backup_config_returns_cookie_status_without_exposing_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = tmp_path / "config.json"
+            config_path.write_text(
+                json.dumps({
+                    "user_id_list": ["1234567890"],
+                    "cookie": "PASTE_YOUR_WEIBO_COOKIE_HERE",
+                    "write_mode": ["sqlite"],
+                }),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(server, "CONFIG_PATH", config_path),
+                patch.object(server, "LOGS_DIR", tmp_path),
+            ):
+                response = asyncio.run(server.save_backup_config({"cookie": "SUB=new-cookie"}))
+
+        payload = json.loads(response.body)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["cookie_configured"])
+        self.assertEqual(payload["config_issues"], [])
+        self.assertNotIn("SUB=new-cookie", response.body.decode("utf-8"))
+
+    def test_spider_command_skips_non_executable_venv_python(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            spider_dir = tmp_path / "weiboSpider"
+            stale_python = spider_dir / "venv" / "bin" / "python"
+            stale_python.parent.mkdir(parents=True)
+            stale_python.write_text("#!/bin/sh\n", encoding="utf-8")
+            stale_python.chmod(0o644)
+
+            with (
+                patch.object(server, "SPIDER_PYTHON", None),
+                patch.object(server, "ROOT_VENV_PYTHON", tmp_path / ".venv" / "bin" / "python"),
+                patch.object(server, "SPIDER_DIR", spider_dir),
+                patch.object(server, "CONFIG_PATH", spider_dir / "config.json"),
+                patch.object(server, "BACKUP_DIR", tmp_path),
+            ):
+                command = server.spider_command()
+
+        self.assertEqual(command[0], sys.executable)
+
+    def test_spider_command_skips_python_that_cannot_be_executed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            spider_dir = tmp_path / "weiboSpider"
+            stale_python = spider_dir / "venv" / "bin" / "python"
+            stale_python.parent.mkdir(parents=True)
+            stale_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            stale_python.chmod(0o755)
+
+            def fake_run(command, *args, **kwargs):
+                if command[0] == str(stale_python):
+                    raise PermissionError("Permission denied")
+                return types.SimpleNamespace(returncode=0)
+
+            with (
+                patch.object(server, "SPIDER_PYTHON", stale_python),
+                patch.object(server, "ROOT_VENV_PYTHON", tmp_path / ".venv" / "bin" / "python"),
+                patch.object(server, "SPIDER_DIR", spider_dir),
+                patch.object(server, "CONFIG_PATH", spider_dir / "config.json"),
+                patch.object(server, "BACKUP_DIR", tmp_path),
+                patch.object(server.subprocess, "run", side_effect=fake_run),
+            ):
+                command = server.spider_command()
+
+        self.assertEqual(command[0], sys.executable)
 
     def test_spider_status_does_not_synthesize_progress_from_archive_count(self):
-        with (
-            patch.object(server, "process_state", return_value=""),
-            patch.object(server, "get_user_info", return_value={"weibo_num": 39400}),
-            patch.object(server, "sqlite_count_weibos", return_value=39385),
-        ):
-            status = server.get_spider_status()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with (
+                patch.object(server, "BACKUP_DIR", tmp_path),
+                patch.object(server, "SPIDER_DIR", tmp_path / "weiboSpider"),
+                patch.object(server, "BACKUP_LOG_PATH", tmp_path / "backup-run.log"),
+                patch.object(server, "process_state", return_value=""),
+                patch.object(server, "get_user_info", return_value={"weibo_num": 39400}),
+                patch.object(server, "sqlite_count_weibos", return_value=39385),
+            ):
+                status = server.get_spider_status()
 
         self.assertEqual(status["status"], "stopped")
         self.assertEqual(status["current_page"], 0)
@@ -270,6 +422,25 @@ class DashboardTests(unittest.TestCase):
 
         self.assertEqual(status["status"], "completed")
         self.assertEqual(status["last_run_weibo_count"], 3)
+
+    def test_start_backup_returns_json_when_process_fails_to_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with (
+                patch.object(server, "LOGS_DIR", tmp_path),
+                patch.object(server, "BACKUP_LOG_PATH", tmp_path / "backup-run.log"),
+                patch.object(server, "BACKUP_PID_PATH", tmp_path / "backup.pid"),
+                patch.object(server, "read_backup_config", return_value={"user_id_list": ["1234567890"], "cookie": "SUB=valid-cookie"}),
+                patch.object(server, "get_backup_process_status", return_value={"running": False, "status": "stopped", "pid": None}),
+                patch.object(server.subprocess, "Popen", side_effect=OSError("Exec format error")),
+            ):
+                response = asyncio.run(server.start_backup())
+
+        payload = json.loads(response.body)
+        self.assertEqual(response.status_code, 500)
+        self.assertFalse(payload["ok"])
+        self.assertIn("启动失败", payload["message"])
+        self.assertIn("Exec format error", payload["message"])
 
 
 if __name__ == "__main__":

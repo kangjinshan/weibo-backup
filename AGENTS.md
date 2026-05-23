@@ -46,7 +46,7 @@
 - **启动监控后台**
   - 入口：`scripts/start_dashboard.sh`
   - 核心逻辑：启动 `dashboard.server:app`
-  - 副作用：监听 `WEIBO_DASHBOARD_HOST` / `WEIBO_DASHBOARD_PORT`，读取 `WEIBO_BACKUP_DIR`
+  - 副作用：监听 `WEIBO_DASHBOARD_HOST` / `WEIBO_DASHBOARD_PORT`，读取 `WEIBO_BACKUP_DIR`；设置 `WEIBO_DASHBOARD_SSL_CERTFILE` 和 `WEIBO_DASHBOARD_SSL_KEYFILE` 时以 HTTPS 启动
 
 - **Docker 部署**
   - 入口：`Dockerfile`
@@ -72,16 +72,19 @@
   - 入口：`POST /api/backup-config` -> `dashboard.server.save_backup_config`
   - 核心逻辑：`sanitize_backup_config()`、`write_json_atomic()`
   - 副作用：备份旧 `weiboSpider/config.json` 为本地 `.before-dashboard-*` 文件，再写入新配置；这些备份文件不提交
+  - 注意：网页可通过可选 `cookie` 字段写入新 cookie，但读取 API 只能暴露 `cookie_configured` 和 `config_issues`，不能返回真实 cookie
 
 - **启动/暂停/继续/停止备份**
   - 入口：`POST /api/backup/start|pause|resume|stop`
-  - 核心逻辑：`spider_command()`、`get_backup_process_status()`、`signal_backup_process()`
+  - 核心逻辑：`backup_config_issues()`、`spider_command()`、`get_backup_process_status()`、`signal_backup_process()`
   - 副作用：创建或读取 `logs/backup.pid`，通过进程组信号控制爬虫
+  - 启动前会检查 `user_id_list` 和 `cookie` 是否仍是示例值；失败时必须返回 JSON 错误，避免前端解析纯文本 500
 
 - **运行原始微博抓取**
   - 入口：`python -m weibo_spider --config_path=... --output_dir=...`
   - 核心逻辑：`weiboSpider/weibo_spider/spider.py`
   - 副作用：按 `write_mode` 写入账号目录和 `sqlite_config` 指向的数据库
+  - 注意：`spider_command()` 只选择存在、可执行且能启动的 Python；Docker 挂载的旧 `weiboSpider/venv/bin/python` 可能存在但不可执行，必须跳过
 
 - **以 JSON 重建 SQLite**
   - 入口：`sync_sqlite_from_json.py`
@@ -91,6 +94,7 @@
 ## 全局设计约束
 
 - `weiboSpider/config.json` 是本地私密文件，可能包含 cookie，不能提交、打印到日志或写入文档。
+- 后台和前端只能展示 cookie 是否已配置；配置保存接口可接收新 cookie，但不得通过读取 API 返回真实 cookie 内容。
 - 公开仓库使用 `weiboSpider/config.example.json` 作为配置模板。
 - 默认 SQLite 路径是 `../data/weibo.db`，该路径相对 `weiboSpider/` 目录解析。
 - 当前备份配置 `write_mode` 应包含 `sqlite`，否则网页无法读取新微博。

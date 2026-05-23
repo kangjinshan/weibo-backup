@@ -7,6 +7,7 @@
 ## 功能
 
 - 在网页弹层里配置账号、日期范围、是否下载图片/视频。
+- 在启动备份前检查账号 ID 和 cookie 是否仍是示例值；页面可粘贴更新 cookie，但只显示 cookie 状态，不回显真实 cookie。
 - 启动、暂停、继续、停止微博备份进程。
 - 查看备份进度、日期日历、微博列表、本地图片和视频。
 - 微博列表支持按“全部/仅原创”和“纯文字/文字+图片/文字+图片+视频”筛选。
@@ -60,6 +61,15 @@ bash scripts/setup_nas.sh
 
 保留 `write_mode` 中的 `sqlite`，否则网页无法从 SQLite 读取新微博。
 
+网页不会回显真实 cookie。NAS 上如果启动备份提示 cookie 未配置或仍是示例值，可以在“备份设置”的“更新 Cookie”里粘贴当前浏览器登录微博后的 cookie 并保存，也可以直接编辑 `weiboSpider/config.json`。
+
+获取可用 cookie 的常用方式：
+
+1. 在自己的电脑浏览器登录微博网页。
+2. 打开浏览器开发者工具的 Network/网络面板，刷新微博页面。
+3. 找到发往 `weibo.com` 的请求，复制 Request Headers 里的完整 `Cookie` 请求头值。
+4. 粘贴到网页“更新 Cookie”输入框或 `weiboSpider/config.json` 的 `cookie` 字段。
+
 3. 启动监控后台：
 
 ```bash
@@ -107,7 +117,11 @@ WEIBO_DASHBOARD_HOST=0.0.0.0
 WEIBO_DASHBOARD_PORT=8765
 WEIBO_BACKUP_DIR=/path/to/weibo-backup
 WEIBO_SPIDER_PYTHON=/path/to/weibo-backup/.venv/bin/python
+WEIBO_DASHBOARD_SSL_CERTFILE=/path/to/fullchain.pem
+WEIBO_DASHBOARD_SSL_KEYFILE=/path/to/privkey.pem
 ```
+
+设置 `WEIBO_DASHBOARD_SSL_CERTFILE` 和 `WEIBO_DASHBOARD_SSL_KEYFILE` 后，后台会直接以 HTTPS 方式监听 `WEIBO_DASHBOARD_PORT`。
 
 ## 数据同步
 
@@ -134,6 +148,8 @@ bash -n scripts/setup_nas.sh scripts/start_dashboard.sh
 ## 注意事项
 
 - 不要提交 `weiboSpider/config.json`，里面通常包含微博 cookie。
+- 启动备份前，后台会检查 `user_id_list` 和 `cookie` 是否仍是示例值；真实 cookie 可以通过配置保存接口写入，但不会通过 API 返回给网页。
 - 不要提交账号目录、`data/*.db`、`img/`、`video/`、`logs/` 和本机虚拟环境。
 - 新机器不要复用复制来的旧 `dashboard/venv/` 或 `weiboSpider/venv/`，运行 `scripts/setup_nas.sh` 重新创建根目录 `.venv`。
+- Docker 运行时不要依赖挂载目录里的旧 `weiboSpider/venv/`；后台启动爬虫会跳过不可执行或无法启动的 venv Python，改用容器当前 Python。不要把 `WEIBO_SPIDER_PYTHON` 指向 `/app/weiboSpider/venv/bin/python`。
 - 备份默认以当前已备份的最近一天作为开始日期，以今天作为结束日期，适合每天做增量备份。

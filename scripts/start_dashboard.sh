@@ -29,4 +29,13 @@ if ! "$PYTHON_BIN" -c "import fastapi, uvicorn" >/dev/null 2>&1; then
   exit 1
 fi
 
-exec "$PYTHON_BIN" -m uvicorn dashboard.server:app --host "$HOST" --port "$PORT"
+UVICORN_ARGS=(dashboard.server:app --host "$HOST" --port "$PORT")
+if [ -n "${WEIBO_DASHBOARD_SSL_CERTFILE:-}" ] || [ -n "${WEIBO_DASHBOARD_SSL_KEYFILE:-}" ]; then
+  if [ ! -f "${WEIBO_DASHBOARD_SSL_CERTFILE:-}" ] || [ ! -f "${WEIBO_DASHBOARD_SSL_KEYFILE:-}" ]; then
+    echo "SSL certificate or key file is missing." >&2
+    exit 1
+  fi
+  UVICORN_ARGS+=(--ssl-certfile "$WEIBO_DASHBOARD_SSL_CERTFILE" --ssl-keyfile "$WEIBO_DASHBOARD_SSL_KEYFILE")
+fi
+
+exec "$PYTHON_BIN" -m uvicorn "${UVICORN_ARGS[@]}"
