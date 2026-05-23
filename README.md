@@ -6,6 +6,7 @@
 
 ## 功能
 
+- 首次访问监控后台时设置访问密码，之后必须登录才能访问 API、媒体文件和备份控制。
 - 在网页弹层里配置账号、日期范围、是否下载图片/视频。
 - 在启动备份前检查账号 ID 和 cookie 是否仍是示例值；页面可粘贴更新 cookie，但只显示 cookie 状态，不回显真实 cookie。
 - 启动、暂停、继续、停止微博备份进程。
@@ -88,6 +89,10 @@ bash scripts/start_dashboard.sh
 http://127.0.0.1:8765/
 ```
 
+首次打开会要求设置访问密码。密码哈希和会话签名密钥会写入本地 `logs/dashboard-auth.json`，仓库不会提交该文件。后续访问后台、API 和本地媒体文件都需要先登录。
+
+部署或更新后可以先访问 `/api/auth/status` 做烟测；如果登录时提示 `Not Found`，通常说明后台还在运行旧进程，需要重启 `scripts/start_dashboard.sh` 或对应容器/服务后再试。不要把临时初始密码写入 README、脚本、环境模板或任何会提交到 Git 的文件。
+
 ## Docker 部署
 
 NAS 上如果系统 Python 太旧，推荐用 Docker：
@@ -119,9 +124,12 @@ WEIBO_BACKUP_DIR=/path/to/weibo-backup
 WEIBO_SPIDER_PYTHON=/path/to/weibo-backup/.venv/bin/python
 WEIBO_DASHBOARD_SSL_CERTFILE=/path/to/fullchain.pem
 WEIBO_DASHBOARD_SSL_KEYFILE=/path/to/privkey.pem
+WEIBO_DASHBOARD_AUTH_PATH=/path/to/weibo-backup/logs/dashboard-auth.json
+WEIBO_DASHBOARD_COOKIE_SECURE=1
 ```
 
 设置 `WEIBO_DASHBOARD_SSL_CERTFILE` 和 `WEIBO_DASHBOARD_SSL_KEYFILE` 后，后台会直接以 HTTPS 方式监听 `WEIBO_DASHBOARD_PORT`。
+如果通过 HTTPS 或反向代理暴露到公网，建议设置 `WEIBO_DASHBOARD_COOKIE_SECURE=1`，让浏览器只通过 HTTPS 发送登录 cookie。
 
 ## 数据同步
 
@@ -148,6 +156,7 @@ bash -n scripts/setup_nas.sh scripts/start_dashboard.sh
 ## 注意事项
 
 - 不要提交 `weiboSpider/config.json`，里面通常包含微博 cookie。
+- 不要提交 `logs/dashboard-auth.json`；忘记访问密码时，停止后台后删除该文件并重启，即可重新走首次设置流程。
 - 启动备份前，后台会检查 `user_id_list` 和 `cookie` 是否仍是示例值；真实 cookie 可以通过配置保存接口写入，但不会通过 API 返回给网页。
 - 不要提交账号目录、`data/*.db`、`img/`、`video/`、`logs/` 和本机虚拟环境。
 - 新机器不要复用复制来的旧 `dashboard/venv/` 或 `weiboSpider/venv/`，运行 `scripts/setup_nas.sh` 重新创建根目录 `.venv`。

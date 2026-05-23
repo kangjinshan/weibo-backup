@@ -2,19 +2,23 @@
 """Weibo Backup Monitor - 后端服务"""
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, unquote
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -37,6 +41,13 @@ CONFIG_PATH = SPIDER_DIR / "config.json"
 LOGS_DIR = BACKUP_DIR / "logs"
 BACKUP_PID_PATH = LOGS_DIR / "backup.pid"
 BACKUP_LOG_PATH = LOGS_DIR / "backup-run.log"
+AUTH_CONFIG_PATH = Path(
+    os.environ.get("WEIBO_DASHBOARD_AUTH_PATH", str(LOGS_DIR / "dashboard-auth.json"))
+).expanduser()
+AUTH_COOKIE_NAME = "weibo_dashboard_session"
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_HASH_ITERATIONS = 260_000
+SESSION_DURATION = timedelta(days=14)
 SPIDER_PYTHON_ENV = os.environ.get("WEIBO_SPIDER_PYTHON")
 SPIDER_PYTHON = Path(SPIDER_PYTHON_ENV).expanduser() if SPIDER_PYTHON_ENV else None
 ROOT_VENV_PYTHON = BACKUP_DIR / ".venv" / "bin" / "python"
@@ -59,6 +70,158 @@ USER_ID_PLACEHOLDER_VALUES = {
     "YOUR_WEIBO_USER_ID",
     "你的微博用户ID",
 }
+PUBLIC_AUTH_PATHS = {
+    "/",
+    "/api/auth/status",
+    "/api/auth/setup",
+    "/api/auth/login",
+}
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def b64encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii")
+
+
+def b64decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value.encode("ascii"))
+
+
+def password_hash(password: str, salt: str, iterations: int) -> str:
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        b64decode(salt),
+        iterations,
+    )
+    return b64encode(digest)
+
+
+def read_dashboard_auth_config() -> dict:
+    try:
+        return json.loads(AUTH_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def dashboard_auth_configured() -> bool:
+    config = read_dashboard_auth_config()
+    return bool(
+        config.get("password_hash")
+        and config.get("password_salt")
+        and config.get("session_secret")
+    )
+
+
+def create_dashboard_auth_config(password: str) -> dict:
+    password = str(password or "")
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise ValueError(f"密码至少需要 {PASSWORD_MIN_LENGTH} 个字符")
+
+    salt = b64encode(secrets.token_bytes(32))
+    config = {
+        "password_alg": "pbkdf2_sha256",
+        "password_hash": password_hash(password, salt, PASSWORD_HASH_ITERATIONS),
+        "password_salt": salt,
+        "password_iterations": PASSWORD_HASH_ITERATIONS,
+        "session_secret": b64encode(secrets.token_bytes(32)),
+        "created_at": utc_now().isoformat(),
+    }
+    AUTH_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(AUTH_CONFIG_PATH, config)
+    try:
+        AUTH_CONFIG_PATH.chmod(0o600)
+    except Exception:
+        pass
+    return config
+
+
+def verify_dashboard_password(password: str, config: dict) -> bool:
+    try:
+        expected = str(config["password_hash"])
+        salt = str(config["password_salt"])
+        iterations = int(config.get("password_iterations", PASSWORD_HASH_ITERATIONS))
+        actual = password_hash(str(password or ""), salt, iterations)
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
+
+
+def session_secret(config: dict) -> bytes:
+    return b64decode(str(config["session_secret"]))
+
+
+def create_dashboard_session_cookie(config: dict) -> str:
+    expires_at = int((utc_now() + SESSION_DURATION).timestamp())
+    payload = f"{expires_at}:{secrets.token_urlsafe(18)}"
+    signature = hmac.new(session_secret(config), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}:{signature}"
+
+
+def valid_dashboard_session_cookie(cookie: str, config: dict) -> bool:
+    try:
+        expires_at, nonce, signature = str(cookie or "").split(":", 2)
+        payload = f"{expires_at}:{nonce}"
+        expected = hmac.new(session_secret(config), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return False
+        return int(expires_at) > int(utc_now().timestamp())
+    except Exception:
+        return False
+
+
+def dashboard_path_requires_auth(path: str) -> bool:
+    return path not in PUBLIC_AUTH_PATHS
+
+
+def request_is_authenticated(request: Request, config: dict) -> bool:
+    return valid_dashboard_session_cookie(
+        request.cookies.get(AUTH_COOKIE_NAME, ""),
+        config,
+    )
+
+
+def dashboard_cookie_secure(request: Request) -> bool:
+    configured = os.environ.get("WEIBO_DASHBOARD_COOKIE_SECURE", "").lower()
+    if configured in {"1", "true", "yes", "on"}:
+        return True
+    if configured in {"0", "false", "no", "off"}:
+        return False
+    return request.url.scheme == "https"
+
+
+def set_dashboard_session_cookie(response: JSONResponse, request: Request, config: dict):
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        create_dashboard_session_cookie(config),
+        max_age=int(SESSION_DURATION.total_seconds()),
+        httponly=True,
+        secure=dashboard_cookie_secure(request),
+        samesite="lax",
+        path="/",
+    )
+
+
+@app.middleware("http")
+async def dashboard_auth_middleware(request: Request, call_next):
+    if not dashboard_path_requires_auth(request.url.path):
+        return await call_next(request)
+
+    config = read_dashboard_auth_config()
+    if not dashboard_auth_configured():
+        return JSONResponse(
+            {"ok": False, "auth_required": True, "configured": False, "message": "请先设置访问密码"},
+            status_code=401,
+        )
+    if not request_is_authenticated(request, config):
+        return JSONResponse(
+            {"ok": False, "auth_required": True, "configured": True, "message": "请先登录"},
+            status_code=401,
+        )
+    return await call_next(request)
 
 
 def find_user_dir():
@@ -524,6 +687,52 @@ def sort_weibos_chronologically(weibos):
 async def index():
     html_path = Path(__file__).parent / "static" / "index.html"
     return HTMLResponse(content=html_path.read_text(encoding='utf-8'))
+
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    config = read_dashboard_auth_config()
+    configured = dashboard_auth_configured()
+    return JSONResponse(
+        {
+            "configured": configured,
+            "authenticated": bool(configured and request_is_authenticated(request, config)),
+        }
+    )
+
+
+@app.post("/api/auth/setup")
+async def setup_dashboard_auth(request: Request, payload: dict):
+    if dashboard_auth_configured():
+        return JSONResponse({"ok": False, "message": "访问密码已设置"}, status_code=400)
+    try:
+        config = create_dashboard_auth_config(payload.get("password", ""))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
+
+    response = JSONResponse({"ok": True, "configured": True, "authenticated": True})
+    set_dashboard_session_cookie(response, request, config)
+    return response
+
+
+@app.post("/api/auth/login")
+async def login_dashboard_auth(request: Request, payload: dict):
+    config = read_dashboard_auth_config()
+    if not dashboard_auth_configured():
+        return JSONResponse({"ok": False, "message": "请先设置访问密码"}, status_code=400)
+    if not verify_dashboard_password(payload.get("password", ""), config):
+        return JSONResponse({"ok": False, "message": "密码错误"}, status_code=401)
+
+    response = JSONResponse({"ok": True, "configured": True, "authenticated": True})
+    set_dashboard_session_cookie(response, request, config)
+    return response
+
+
+@app.post("/api/auth/logout")
+async def logout_dashboard_auth():
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+    return response
 
 
 @app.get("/media/{media_path:path}")

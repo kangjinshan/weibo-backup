@@ -60,11 +60,12 @@ bash scripts/start_dashboard.sh
 0.0.0.0:8765
 ```
 
+首次打开 `http://NAS_IP:8765/` 会要求设置访问密码。密码哈希和会话签名密钥默认保存在 `logs/dashboard-auth.json`，不要复制到 Git 仓库；忘记密码时停止后台、删除该文件并重启即可重新设置。
+
 部署检查：
 
 ```bash
-curl http://127.0.0.1:8765/api/stats
-curl http://127.0.0.1:8765/api/backup-config
+curl http://127.0.0.1:8765/api/auth/status
 ```
 
 如果启动备份失败，先看网页弹层提示；后台会在真正启动爬虫前检查 `user_id_list` 和 `cookie`，并把缺失配置作为 JSON 返回，避免浏览器出现 `Unexpected token` 一类的解析错误。
@@ -111,12 +112,14 @@ docker run -d \
   -w /app \
   -e WEIBO_DASHBOARD_SSL_CERTFILE=/app/certs/weibo.jinshanweb.com/fullchain.pem \
   -e WEIBO_DASHBOARD_SSL_KEYFILE=/app/certs/weibo.jinshanweb.com/privkey.pem \
+  -e WEIBO_DASHBOARD_COOKIE_SECURE=1 \
   weibo-backup-dashboard
 ```
 
 ## 不需要复制或提交的内容
 
 - `weiboSpider/config.json`
+- `logs/dashboard-auth.json`
 - `data/*.db`
 - 账号目录，例如 `某微博昵称/`
 - `img/`

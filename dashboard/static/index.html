@@ -31,6 +31,49 @@ body {
   color: var(--md-on-surface);
   min-height: 100vh;
 }
+[hidden] { display: none !important; }
+
+/* Auth Gate */
+.auth-gate {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #f8f9fa;
+}
+.auth-dialog {
+  width: min(420px, 100%);
+  background: var(--md-surface);
+  border: 1px solid var(--md-outline);
+  border-radius: var(--md-shape-lg);
+  box-shadow: var(--md-elevation-2);
+  padding: 24px;
+}
+.auth-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.auth-title .material-icons-outlined {
+  color: var(--md-primary);
+  font-size: 26px;
+}
+.auth-title h1 {
+  font-size: 22px;
+  font-weight: 500;
+}
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+.auth-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
 
 /* Top App Bar */
 .top-bar {
@@ -766,10 +809,39 @@ body {
 </head>
 <body>
 
+<div class="auth-gate" id="authGate">
+  <div class="auth-dialog">
+    <div class="auth-title">
+      <span class="material-icons-outlined">lock</span>
+      <h1>微博备份监控</h1>
+    </div>
+    <div class="auth-form">
+      <div class="field full">
+        <label for="authPassword" id="authPasswordLabel">访问密码</label>
+        <input id="authPassword" type="password" autocomplete="current-password">
+      </div>
+      <div class="field full" id="authConfirmField">
+        <label for="authPasswordConfirm">确认密码</label>
+        <input id="authPasswordConfirm" type="password" autocomplete="new-password">
+      </div>
+      <div class="auth-actions">
+        <button class="action-button primary" id="authSubmitButton" onclick="submitAuth()">
+          <span class="material-icons-outlined">login</span>继续
+        </button>
+      </div>
+      <div class="settings-feedback" id="authFeedback"></div>
+    </div>
+  </div>
+</div>
+
+<div id="appShell" hidden>
 <div class="top-bar">
   <span class="material-icons-outlined">cloud_download</span>
   <h1>微博备份监控</h1>
   <div class="top-actions">
+    <button class="icon-button" id="logoutButton" onclick="logoutDashboard()" title="退出登录" aria-label="退出登录">
+      <span class="material-icons-outlined">logout</span>
+    </button>
     <button class="icon-button" onclick="openBackupModal()" title="备份设置" aria-label="备份设置">
       <span class="material-icons-outlined">settings</span>
     </button>
@@ -946,6 +1018,7 @@ body {
     </div>
   </div>
 </div>
+</div>
 
 <script>
 const API = '';
@@ -964,6 +1037,8 @@ let lightboxX = 0;
 let lightboxY = 0;
 let lightboxDragging = false;
 let lightboxDragStart = { x: 0, y: 0 };
+let authConfigured = false;
+let dashboardStarted = false;
 
 function currentMonthKey() {
   const year = currentDate.getFullYear();
@@ -995,17 +1070,33 @@ function setMonthFromKey(monthKey) {
 
 // --- API ---
 async function fetchJSON(url) {
-  const r = await fetch(API + url);
-  return parseJSONResponse(r);
+  try {
+    const r = await fetch(API + url);
+    return await parseJSONResponse(r);
+  } catch (err) {
+    handleAuthError(err);
+    throw err;
+  }
 }
 
 async function postJSON(url, payload = {}) {
-  const r = await fetch(API + url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  return parseJSONResponse(r);
+  try {
+    const r = await fetch(API + url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return await parseJSONResponse(r);
+  } catch (err) {
+    handleAuthError(err);
+    throw err;
+  }
+}
+
+function handleAuthError(err) {
+  if (err.status === 401 && err.payload?.auth_required) {
+    showAuthGate(err.payload.configured);
+  }
 }
 
 async function parseJSONResponse(response) {
@@ -1017,11 +1108,92 @@ async function parseJSONResponse(response) {
     const message = text.trim() || `HTTP ${response.status}`;
     throw new Error(message);
   }
-  if (!response.ok && !payload.message) {
-    const message = payload.detail || `HTTP ${response.status}`;
-    throw new Error(message);
+  if (!response.ok) {
+    const message = payload.message || payload.detail || `HTTP ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
   return payload;
+}
+
+function setAuthFeedback(message, type = '') {
+  const el = document.getElementById('authFeedback');
+  el.className = `settings-feedback ${type}`;
+  el.textContent = message;
+}
+
+function showAuthGate(configured) {
+  authConfigured = Boolean(configured);
+  document.getElementById('appShell').hidden = true;
+  document.getElementById('authGate').hidden = false;
+  document.getElementById('authConfirmField').hidden = authConfigured;
+  document.getElementById('authPasswordLabel').textContent = authConfigured ? '访问密码' : '设置访问密码';
+  document.getElementById('authSubmitButton').innerHTML = authConfigured
+    ? '<span class="material-icons-outlined">login</span>登录'
+    : '<span class="material-icons-outlined">lock_reset</span>设置密码';
+  document.getElementById('authPassword').autocomplete = authConfigured ? 'current-password' : 'new-password';
+  setAuthFeedback(authConfigured ? '请输入访问密码' : '首次访问需要设置一个访问密码');
+  setTimeout(() => document.getElementById('authPassword').focus(), 0);
+}
+
+function showDashboard() {
+  document.getElementById('authGate').hidden = true;
+  document.getElementById('appShell').hidden = false;
+  setAuthFeedback('');
+  if (!dashboardStarted) {
+    dashboardStarted = true;
+    init();
+  } else {
+    refreshAll();
+  }
+}
+
+async function loadAuthStatus() {
+  try {
+    const status = await fetchJSON('/api/auth/status');
+    if (status.authenticated) {
+      showDashboard();
+    } else {
+      showAuthGate(status.configured);
+    }
+  } catch (err) {
+    showAuthGate(true);
+    setAuthFeedback(`认证状态读取失败：${err.message}`, 'error');
+  }
+}
+
+async function submitAuth() {
+  const password = document.getElementById('authPassword').value;
+  const confirm = document.getElementById('authPasswordConfirm').value;
+  if (!authConfigured && password !== confirm) {
+    setAuthFeedback('两次输入的密码不一致', 'error');
+    return;
+  }
+
+  setAuthFeedback(authConfigured ? '登录中...' : '设置中...');
+  try {
+    await postJSON(authConfigured ? '/api/auth/login' : '/api/auth/setup', { password });
+    document.getElementById('authPassword').value = '';
+    document.getElementById('authPasswordConfirm').value = '';
+    showDashboard();
+  } catch (err) {
+    setAuthFeedback(err.message, 'error');
+  }
+}
+
+async function logoutDashboard() {
+  try {
+    await postJSON('/api/auth/logout');
+  } finally {
+    if (autoRefreshTimer) {
+      clearInterval(autoRefreshTimer);
+      autoRefreshTimer = null;
+    }
+    dashboardStarted = false;
+    showAuthGate(true);
+  }
 }
 
 // --- Stats & Status ---
@@ -1624,6 +1796,11 @@ function stopLightboxDrag(e) {
 lightboxViewport.addEventListener('pointerup', stopLightboxDrag);
 lightboxViewport.addEventListener('pointercancel', stopLightboxDrag);
 document.addEventListener('keydown', e => {
+  if (!document.getElementById('authGate').hidden && e.key === 'Enter') {
+    e.preventDefault();
+    submitAuth();
+    return;
+  }
   if (e.key === 'Escape') {
     closeLightbox();
     closeBackupModal();
@@ -1668,7 +1845,7 @@ async function init() {
   await loadDates();
   startAutoRefresh();
 }
-init();
+loadAuthStatus();
 </script>
 </body>
 </html>

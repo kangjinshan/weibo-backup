@@ -1,9 +1,11 @@
 import asyncio
+import base64
 import json
 import tempfile
 import sys
 import types
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,6 +26,12 @@ class _FakeFastAPI:
 
         return decorator
 
+    def middleware(self, *args, **kwargs):
+        def decorator(func):
+            return func
+
+        return decorator
+
 
 class _FakeJSONResponse:
     def __init__(self, content, status_code=200):
@@ -34,6 +42,7 @@ class _FakeJSONResponse:
 fastapi_module = types.ModuleType("fastapi")
 fastapi_module.FastAPI = _FakeFastAPI
 fastapi_module.HTTPException = Exception
+fastapi_module.Request = object
 responses_module = types.ModuleType("fastapi.responses")
 responses_module.FileResponse = object
 responses_module.HTMLResponse = str
@@ -117,6 +126,67 @@ class DashboardTests(unittest.TestCase):
             "await response.text()",
             "response.ok",
             "throw new Error(message)",
+        ]:
+            self.assertIn(expected, html)
+
+    def test_dashboard_auth_config_uses_local_hash_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            auth_path = Path(tmp) / "dashboard-auth.json"
+            with patch.object(server, "AUTH_CONFIG_PATH", auth_path):
+                self.assertFalse(server.dashboard_auth_configured())
+                auth_config = server.create_dashboard_auth_config("correct horse battery staple")
+
+                saved_text = auth_path.read_text(encoding="utf-8")
+                saved = json.loads(saved_text)
+
+        self.assertTrue(saved["password_hash"])
+        self.assertTrue(saved["password_salt"])
+        self.assertNotIn("correct horse", saved_text)
+        self.assertEqual(saved["password_hash"], auth_config["password_hash"])
+        self.assertTrue(server.verify_dashboard_password("correct horse battery staple", saved))
+        self.assertFalse(server.verify_dashboard_password("wrong password", saved))
+
+    def test_dashboard_auth_rejects_short_first_password(self):
+        with self.assertRaises(ValueError):
+            server.create_dashboard_auth_config("short")
+
+    def test_dashboard_session_cookie_is_signed_and_expires(self):
+        auth_config = {
+            "session_secret": base64.urlsafe_b64encode(b"test-secret").decode("ascii"),
+        }
+        now = datetime(2026, 5, 23, tzinfo=timezone.utc)
+
+        with patch.object(server, "utc_now", return_value=now):
+            cookie = server.create_dashboard_session_cookie(auth_config)
+            self.assertTrue(server.valid_dashboard_session_cookie(cookie, auth_config))
+            self.assertFalse(server.valid_dashboard_session_cookie(cookie + "tampered", auth_config))
+
+        with patch.object(server, "utc_now", return_value=now + timedelta(days=15)):
+            self.assertFalse(server.valid_dashboard_session_cookie(cookie, auth_config))
+
+    def test_dashboard_auth_path_rules_protect_data_endpoints(self):
+        self.assertFalse(server.dashboard_path_requires_auth("/"))
+        self.assertFalse(server.dashboard_path_requires_auth("/api/auth/status"))
+        self.assertFalse(server.dashboard_path_requires_auth("/api/auth/login"))
+        self.assertFalse(server.dashboard_path_requires_auth("/api/auth/setup"))
+        self.assertTrue(server.dashboard_path_requires_auth("/api/stats"))
+        self.assertTrue(server.dashboard_path_requires_auth("/api/backup/start"))
+        self.assertTrue(server.dashboard_path_requires_auth("/media/账号/img/a.jpg"))
+
+    def test_auth_ui_is_available(self):
+        html = (Path(__file__).parents[1] / "dashboard" / "static" / "index.html").read_text(encoding="utf-8")
+
+        for expected in [
+            "id=\"authGate\"",
+            "id=\"authPassword\"",
+            "id=\"authPasswordConfirm\"",
+            "id=\"logoutButton\"",
+            "async function loadAuthStatus",
+            "async function submitAuth",
+            "/api/auth/status",
+            "/api/auth/setup",
+            "/api/auth/login",
+            "/api/auth/logout",
         ]:
             self.assertIn(expected, html)
 

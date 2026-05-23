@@ -4,7 +4,7 @@
 
 `weibo-backup` 是一个可公开发布的本地微博备份工作区。它用 `weiboSpider` 抓取微博内容、图片和视频，用 FastAPI 网页监控备份进度、配置增量备份，并浏览本地归档。
 
-仓库不包含真实微博数据、媒体文件、SQLite 数据库或 cookie。真实运行配置来自本地 `weiboSpider/config.json`，公开仓库只提交 `weiboSpider/config.example.json`。
+仓库不包含真实微博数据、媒体文件、SQLite 数据库、cookie 或后台访问密码。真实运行配置来自本地 `weiboSpider/config.json`，公开仓库只提交 `weiboSpider/config.example.json`；后台首次访问密码的哈希文件默认写入 `logs/dashboard-auth.json`。
 
 业务边界：
 
@@ -25,7 +25,7 @@
 | 目录 | 职责 | 关键说明 |
 | --- | --- | --- |
 | `dashboard/` | 监控后台与 API | `server.py` 暴露统计、微博列表、媒体文件、备份配置和进程控制接口 |
-| `dashboard/static/` | 单页监控界面 | `index.html` 内含日历、微博列表筛选、备份弹层、图片灯箱和自动刷新逻辑 |
+| `dashboard/static/` | 单页监控界面 | `index.html` 内含首次设置/登录门、日历、微博列表筛选、备份弹层、图片灯箱和自动刷新逻辑 |
 | `weiboSpider/` | 微博爬虫主体 | 包含上游爬虫源码、示例配置和写入逻辑；`config.json` 为本地私密文件，不提交 |
 | `weiboSpider/weibo_spider/` | 抓取、解析、下载、写入核心包 | `spider.py` 调度解析器、下载器和 writers |
 | `scripts/` | 部署与启动脚本 | `setup_nas.sh` 创建根 `.venv`；`start_dashboard.sh` 启动 Uvicorn |
@@ -46,7 +46,13 @@
 - **启动监控后台**
   - 入口：`scripts/start_dashboard.sh`
   - 核心逻辑：启动 `dashboard.server:app`
-  - 副作用：监听 `WEIBO_DASHBOARD_HOST` / `WEIBO_DASHBOARD_PORT`，读取 `WEIBO_BACKUP_DIR`；设置 `WEIBO_DASHBOARD_SSL_CERTFILE` 和 `WEIBO_DASHBOARD_SSL_KEYFILE` 时以 HTTPS 启动
+  - 副作用：监听 `WEIBO_DASHBOARD_HOST` / `WEIBO_DASHBOARD_PORT`，读取 `WEIBO_BACKUP_DIR`；设置 `WEIBO_DASHBOARD_SSL_CERTFILE` 和 `WEIBO_DASHBOARD_SSL_KEYFILE` 时以 HTTPS 启动；首次访问会引导设置后台访问密码
+
+- **首次设置与登录后台**
+  - 入口：`GET /api/auth/status`、`POST /api/auth/setup`、`POST /api/auth/login`、`POST /api/auth/logout`
+  - 核心逻辑：`dashboard_auth_middleware()`、`create_dashboard_auth_config()`、`verify_dashboard_password()`、`create_dashboard_session_cookie()`
+  - 副作用：默认写入 `logs/dashboard-auth.json`，只保存 PBKDF2 密码哈希、salt、会话签名密钥和创建时间；登录成功后设置 HttpOnly 会话 cookie
+  - 注意：除 `/`、`/api/auth/status`、`/api/auth/setup`、`/api/auth/login` 外，API、媒体文件和备份控制接口都需要已登录会话
 
 - **Docker 部署**
   - 入口：`Dockerfile`
@@ -56,7 +62,7 @@
 - **读取备份统计**
   - 入口：`GET /api/stats` -> `dashboard.server.stats`
   - 核心逻辑：`get_stats()`、`sqlite_store.count_weibos()`、`find_user_dir()`
-  - 副作用：微博数量来自 `sqlite_config` 指向的 SQLite；媒体大小遍历本地账号目录
+  - 副作用：微博数量来自 `sqlite_config` 指向的 SQLite；媒体大小遍历本地账号目录；需要后台登录会话
 
 - **浏览微博列表**
   - 入口：`GET /api/weibo` -> `dashboard.server.weibo_list`
@@ -94,6 +100,9 @@
 ## 全局设计约束
 
 - `weiboSpider/config.json` 是本地私密文件，可能包含 cookie，不能提交、打印到日志或写入文档。
+- `logs/dashboard-auth.json` 是本地私密文件，包含后台访问密码哈希和会话签名密钥，不能提交、打印到日志或写入文档；忘记密码时应停止服务后删除该文件再重新设置。
+- 后台必须默认保护除首页和 auth setup/login/status 外的 API、媒体文件和备份控制接口。
+- 后台登录 cookie 必须使用 HttpOnly；公网 HTTPS/反向代理部署建议设置 `WEIBO_DASHBOARD_COOKIE_SECURE=1`。
 - 后台和前端只能展示 cookie 是否已配置；配置保存接口可接收新 cookie，但不得通过读取 API 返回真实 cookie 内容。
 - 公开仓库使用 `weiboSpider/config.example.json` 作为配置模板。
 - 默认 SQLite 路径是 `../data/weibo.db`，该路径相对 `weiboSpider/` 目录解析。
@@ -115,9 +124,10 @@ bash -n scripts/setup_nas.sh scripts/start_dashboard.sh
 后台接口烟测：
 
 ```bash
-curl http://127.0.0.1:8765/api/stats
-curl http://127.0.0.1:8765/api/backup-config
+curl http://127.0.0.1:8765/api/auth/status
 ```
+
+`/api/stats`、`/api/backup-config`、`/media/...` 等接口需要登录会话；直接 `curl` 未带会话 cookie 时应返回 401。
 
 ## AGENTS 维护规则
 
