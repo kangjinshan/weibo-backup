@@ -664,7 +664,8 @@ body {
   color: var(--md-on-surface-variant);
 }
 .field input,
-.field textarea {
+.field textarea,
+.field select {
   width: 100%;
   min-height: 42px;
   border: 1px solid var(--md-outline);
@@ -679,7 +680,8 @@ body {
   resize: vertical;
 }
 .field input:focus,
-.field textarea:focus {
+.field textarea:focus,
+.field select:focus {
   border-color: var(--md-primary);
   outline: none;
   box-shadow: 0 0 0 2px rgba(26,115,232,.16);
@@ -991,6 +993,39 @@ body {
         <div class="toggle-row">
           <label for="configVideoDownload">包含视频</label>
           <input id="configVideoDownload" type="checkbox">
+        </div>
+        <div class="toggle-row">
+          <label for="configAutoBackupEnabled">每日自动备份</label>
+          <input id="configAutoBackupEnabled" type="checkbox" onchange="syncAutoBackupHourState()">
+        </div>
+        <div class="field">
+          <label for="configAutoBackupHour">执行时间</label>
+          <select id="configAutoBackupHour">
+            <option value="0">00:00</option>
+            <option value="1">01:00</option>
+            <option value="2">02:00</option>
+            <option value="3">03:00</option>
+            <option value="4">04:00</option>
+            <option value="5">05:00</option>
+            <option value="6">06:00</option>
+            <option value="7">07:00</option>
+            <option value="8">08:00</option>
+            <option value="9">09:00</option>
+            <option value="10">10:00</option>
+            <option value="11">11:00</option>
+            <option value="12">12:00</option>
+            <option value="13">13:00</option>
+            <option value="14">14:00</option>
+            <option value="15">15:00</option>
+            <option value="16">16:00</option>
+            <option value="17">17:00</option>
+            <option value="18">18:00</option>
+            <option value="19">19:00</option>
+            <option value="20">20:00</option>
+            <option value="21">21:00</option>
+            <option value="22">22:00</option>
+            <option value="23">23:00</option>
+          </select>
         </div>
         <div class="field full">
           <label for="configWriteMode">写入格式</label>
@@ -1641,6 +1676,10 @@ function showBackupFeedback(message, type = '') {
   el.textContent = message;
 }
 
+function syncAutoBackupHourState() {
+  document.getElementById('configAutoBackupHour').disabled = !document.getElementById('configAutoBackupEnabled').checked;
+}
+
 function fillBackupConfig(config) {
   document.getElementById('configUserIds').value = (config.user_id_list || []).join(', ');
   document.getElementById('configCookieStatus').value = config.cookie_configured ? '已配置' : '未配置或仍是示例值';
@@ -1650,6 +1689,9 @@ function fillBackupConfig(config) {
   document.getElementById('configPicDownload').checked = Boolean(config.pic_download);
   document.getElementById('configVideoDownload').checked = Boolean(config.video_download);
   document.getElementById('configWriteMode').value = (config.write_mode || []).join(', ');
+  document.getElementById('configAutoBackupEnabled').checked = Boolean(config.auto_backup_enabled);
+  document.getElementById('configAutoBackupHour').value = String(config.auto_backup_hour ?? 3);
+  syncAutoBackupHourState();
 }
 
 function collectBackupConfig() {
@@ -1659,6 +1701,8 @@ function collectBackupConfig() {
     end_date: document.getElementById('configEndDate').value,
     pic_download: document.getElementById('configPicDownload').checked,
     video_download: document.getElementById('configVideoDownload').checked,
+    auto_backup_enabled: document.getElementById('configAutoBackupEnabled').checked,
+    auto_backup_hour: document.getElementById('configAutoBackupHour').value,
   };
   const cookie = document.getElementById('configCookieInput').value.trim();
   if (cookie) payload.cookie = cookie;

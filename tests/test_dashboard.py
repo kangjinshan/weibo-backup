@@ -26,6 +26,12 @@ class _FakeFastAPI:
 
         return decorator
 
+    def on_event(self, *args, **kwargs):
+        def decorator(func):
+            return func
+
+        return decorator
+
     def middleware(self, *args, **kwargs):
         def decorator(func):
             return func
@@ -110,9 +116,13 @@ class DashboardTests(unittest.TestCase):
             "id=\"configEndDate\"",
             "id=\"configPicDownload\"",
             "id=\"configVideoDownload\"",
+            "id=\"configAutoBackupEnabled\"",
+            "id=\"configAutoBackupHour\"",
             "/api/backup-config",
             "/api/backup/${action}",
             "startBackupFromModal",
+            "auto_backup_enabled: document.getElementById('configAutoBackupEnabled').checked",
+            "auto_backup_hour: document.getElementById('configAutoBackupHour').value",
             "backupAction('pause')",
             "backupAction('stop')",
         ]:
@@ -306,6 +316,32 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(normalized["since_date"], "2026-05-21")
         self.assertEqual(normalized["end_date"], "now")
 
+    def test_sanitize_backup_config_normalizes_auto_backup_settings(self):
+        current = {
+            "user_id_list": ["123"],
+            "cookie": "SUB=old-cookie",
+            "auto_backup_enabled": False,
+            "auto_backup_hour": 3,
+        }
+
+        normalized = server.sanitize_backup_config(
+            {"auto_backup_enabled": "on", "auto_backup_hour": "22"},
+            current,
+        )
+
+        self.assertTrue(normalized["auto_backup_enabled"])
+        self.assertEqual(normalized["auto_backup_hour"], 22)
+
+    def test_auto_backup_settings_default_and_validate_hour(self):
+        self.assertEqual(
+            server.auto_backup_settings({}),
+            {"enabled": False, "hour": 3},
+        )
+        self.assertEqual(
+            server.auto_backup_settings({"auto_backup_enabled": 1, "auto_backup_hour": "25"}),
+            {"enabled": True, "hour": 3},
+        )
+
     def test_backup_status_reports_paused_for_stopped_pid(self):
         with tempfile.TemporaryDirectory() as tmp:
             pid_path = Path(tmp) / "backup.pid"
@@ -337,8 +373,32 @@ class DashboardTests(unittest.TestCase):
         payload = json.loads(response.body)
         self.assertEqual(payload["since_date"], "2020-03-04")
         self.assertEqual(payload["end_date"], "2026-05-22")
+        self.assertFalse(payload["auto_backup_enabled"])
+        self.assertEqual(payload["auto_backup_hour"], 3)
         self.assertTrue(payload["cookie_configured"])
         self.assertEqual(payload["config_issues"], [])
+
+    def test_backup_config_returns_auto_backup_settings(self):
+        current_config = {
+            "user_id_list": ["1234567890"],
+            "write_mode": ["sqlite"],
+            "cookie": "SUB=valid-cookie",
+            "auto_backup_enabled": True,
+            "auto_backup_hour": 21,
+        }
+
+        with (
+            patch.object(server, "read_backup_config", return_value=current_config),
+            patch.object(server, "latest_backed_up_date", return_value=None),
+            patch.object(server, "today_string", return_value="2026-05-22", create=True),
+            patch.object(server, "get_backup_process_status", return_value={"running": False, "status": "stopped", "pid": None}),
+        ):
+            response = asyncio.run(server.backup_config())
+
+        payload = json.loads(response.body)
+        self.assertTrue(payload["auto_backup_enabled"])
+        self.assertEqual(payload["auto_backup_hour"], 21)
+        self.assertNotIn("SUB=valid-cookie", response.body.decode("utf-8"))
 
     def test_backup_config_reports_placeholder_cookie_without_exposing_value(self):
         current_config = {
@@ -511,6 +571,43 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertIn("启动失败", payload["message"])
         self.assertIn("Exec format error", payload["message"])
+
+    def test_next_auto_backup_at_uses_selected_wall_clock_hour(self):
+        now = datetime(2026, 5, 26, 2, 30, tzinfo=timezone.utc)
+
+        same_day = server.next_auto_backup_at(3, now=now, tz=timezone.utc)
+        next_day = server.next_auto_backup_at(2, now=now, tz=timezone.utc)
+
+        self.assertEqual(same_day, datetime(2026, 5, 26, 3, 0, tzinfo=timezone.utc))
+        self.assertEqual(next_day, datetime(2026, 5, 27, 2, 0, tzinfo=timezone.utc))
+
+    def test_next_auto_backup_at_defaults_to_china_wall_clock_time(self):
+        now = datetime(2026, 5, 26, 4, 30, tzinfo=timezone.utc)
+
+        scheduled = server.next_auto_backup_at(13, now=now)
+
+        self.assertEqual(scheduled.isoformat(), "2026-05-26T13:00:00+08:00")
+
+    def test_scheduled_backup_skips_when_existing_backup_running(self):
+        with (
+            patch.object(server, "get_backup_process_status", return_value={"running": True, "status": "running", "pid": 123}),
+            patch.object(server, "start_backup_process") as start_backup_process,
+        ):
+            result = asyncio.run(server.run_scheduled_backup_once())
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "skipped")
+        self.assertFalse(start_backup_process.called)
+
+    def test_scheduled_backup_uses_manual_start_guard(self):
+        with (
+            patch.object(server, "get_backup_process_status", return_value={"running": False, "status": "stopped", "pid": None}),
+            patch.object(server, "start_backup_process", return_value={"ok": True, "pid": 456}) as start_backup_process,
+        ):
+            result = asyncio.run(server.run_scheduled_backup_once())
+
+        self.assertTrue(result["ok"])
+        start_backup_process.assert_called_once()
 
 
 if __name__ == "__main__":

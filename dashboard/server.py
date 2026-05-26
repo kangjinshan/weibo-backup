@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, unquote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -70,6 +71,10 @@ USER_ID_PLACEHOLDER_VALUES = {
     "YOUR_WEIBO_USER_ID",
     "你的微博用户ID",
 }
+DEFAULT_AUTO_BACKUP_HOUR = 3
+DEFAULT_AUTO_BACKUP_TIMEZONE = "Asia/Shanghai"
+AUTO_BACKUP_TIMEZONE_ENV = "WEIBO_AUTO_BACKUP_TIMEZONE"
+AUTO_BACKUP_TASK: Optional[asyncio.Task] = None
 PUBLIC_AUTH_PATHS = {
     "/",
     "/api/auth/status",
@@ -301,6 +306,31 @@ def bool_to_int(value):
     return 1 if value else 0
 
 
+def normalize_auto_backup_hour(value, default: int = DEFAULT_AUTO_BACKUP_HOUR) -> int:
+    try:
+        hour = int(value)
+    except (TypeError, ValueError):
+        return default
+    if 0 <= hour <= 23:
+        return hour
+    return default
+
+
+def auto_backup_settings(config: dict) -> dict:
+    return {
+        "enabled": bool(bool_to_int(config.get("auto_backup_enabled", False))),
+        "hour": normalize_auto_backup_hour(config.get("auto_backup_hour", DEFAULT_AUTO_BACKUP_HOUR)),
+    }
+
+
+def auto_backup_timezone():
+    name = os.environ.get(AUTO_BACKUP_TIMEZONE_ENV, DEFAULT_AUTO_BACKUP_TIMEZONE)
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo(DEFAULT_AUTO_BACKUP_TIMEZONE)
+
+
 def sanitize_backup_config(incoming: dict, current: dict) -> dict:
     config = dict(current)
     if "user_id_list" in incoming:
@@ -325,6 +355,10 @@ def sanitize_backup_config(incoming: dict, current: dict) -> dict:
         cookie = str(incoming.get("cookie") or "").strip()
         if cookie:
             config["cookie"] = cookie
+    if "auto_backup_enabled" in incoming:
+        config["auto_backup_enabled"] = bool(bool_to_int(incoming.get("auto_backup_enabled")))
+    if "auto_backup_hour" in incoming:
+        config["auto_backup_hour"] = normalize_auto_backup_hour(incoming.get("auto_backup_hour"))
     return config
 
 
@@ -444,6 +478,133 @@ def spider_command():
         f"--config_path={CONFIG_PATH}",
         f"--output_dir={BACKUP_DIR}",
     ]
+
+
+def start_backup_process() -> dict:
+    status = get_backup_process_status()
+    if status["running"]:
+        return {"ok": False, "status": status, "message": "backup already running"}
+    try:
+        config = read_backup_config()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"启动失败：无法读取 weiboSpider/config.json：{exc}",
+            "status_code": 400,
+        }
+    issues = backup_config_issues(config)
+    if issues:
+        return {
+            "ok": False,
+            "message": "启动失败：" + "；".join(issues),
+            "config_issues": issues,
+            "status_code": 400,
+        }
+    ensure_logs_dir()
+    command = spider_command()
+    try:
+        with BACKUP_LOG_PATH.open("ab") as log_fh:
+            process = subprocess.Popen(
+                command,
+                cwd=str(SPIDER_DIR),
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"启动失败：{exc}",
+            "command": command,
+            "cwd": str(SPIDER_DIR),
+            "log_path": str(BACKUP_LOG_PATH),
+            "status_code": 500,
+        }
+    BACKUP_PID_PATH.write_text(str(process.pid) + "\n", encoding="utf-8")
+    return {"ok": True, "pid": process.pid, "log_path": str(BACKUP_LOG_PATH)}
+
+
+def json_response_from_result(result: dict) -> JSONResponse:
+    status_code = int(result.get("status_code", 200))
+    payload = {key: value for key, value in result.items() if key != "status_code"}
+    return JSONResponse(payload, status_code=status_code)
+
+
+def next_auto_backup_at(hour: int, now: Optional[datetime] = None, tz=None) -> datetime:
+    tz = tz or auto_backup_timezone()
+    if now is None:
+        now = datetime.now(tz)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=tz)
+    else:
+        now = now.astimezone(tz)
+    target = now.replace(hour=normalize_auto_backup_hour(hour), minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return target
+
+
+async def run_scheduled_backup_once() -> dict:
+    status = get_backup_process_status()
+    if status["running"]:
+        return {"ok": False, "status": "skipped", "reason": "backup already running", "backup_status": status}
+    return start_backup_process()
+
+
+async def auto_backup_scheduler():
+    while True:
+        try:
+            config = read_backup_config()
+            settings = auto_backup_settings(config)
+        except Exception:
+            settings = {"enabled": False, "hour": DEFAULT_AUTO_BACKUP_HOUR}
+
+        if not settings["enabled"]:
+            await asyncio.sleep(60)
+            continue
+
+        target = next_auto_backup_at(settings["hour"])
+        settings_changed = False
+        while True:
+            delay = (target - datetime.now(target.tzinfo)).total_seconds()
+            if delay <= 0:
+                break
+            await asyncio.sleep(min(delay, 60))
+            try:
+                latest_settings = auto_backup_settings(read_backup_config())
+            except Exception:
+                latest_settings = {"enabled": False, "hour": DEFAULT_AUTO_BACKUP_HOUR}
+            if latest_settings != settings:
+                settings_changed = True
+                break
+        if settings_changed:
+            continue
+
+        try:
+            current_settings = auto_backup_settings(read_backup_config())
+        except Exception:
+            current_settings = {"enabled": False, "hour": DEFAULT_AUTO_BACKUP_HOUR}
+        if current_settings["enabled"] and current_settings["hour"] == settings["hour"]:
+            await run_scheduled_backup_once()
+
+
+@app.on_event("startup")
+async def start_auto_backup_scheduler():
+    global AUTO_BACKUP_TASK
+    if AUTO_BACKUP_TASK is None or AUTO_BACKUP_TASK.done():
+        AUTO_BACKUP_TASK = asyncio.create_task(auto_backup_scheduler())
+
+
+@app.on_event("shutdown")
+async def stop_auto_backup_scheduler():
+    global AUTO_BACKUP_TASK
+    if AUTO_BACKUP_TASK is not None:
+        AUTO_BACKUP_TASK.cancel()
+        try:
+            await AUTO_BACKUP_TASK
+        except asyncio.CancelledError:
+            pass
+        AUTO_BACKUP_TASK = None
 
 
 def get_stats():
@@ -808,6 +969,7 @@ async def backup_config():
     config = read_backup_config()
     default_dates = incremental_backup_dates(config)
     issues = backup_config_issues(config)
+    schedule = auto_backup_settings(config)
     return JSONResponse(
         {
             "user_id_list": config.get("user_id_list", []),
@@ -816,6 +978,8 @@ async def backup_config():
             "pic_download": bool(config.get("pic_download")),
             "video_download": bool(config.get("video_download")),
             "write_mode": config.get("write_mode", ["csv", "txt", "json", "sqlite"]),
+            "auto_backup_enabled": schedule["enabled"],
+            "auto_backup_hour": schedule["hour"],
             "cookie_configured": cookie_is_configured(config),
             "config_issues": issues,
             "status": get_backup_process_status(),
@@ -845,46 +1009,7 @@ async def save_backup_config(payload: dict):
 
 @app.post("/api/backup/start")
 async def start_backup():
-    status = get_backup_process_status()
-    if status["running"]:
-        return JSONResponse({"ok": False, "status": status, "message": "backup already running"})
-    try:
-        config = read_backup_config()
-    except Exception as exc:
-        return JSONResponse(
-            {"ok": False, "message": f"启动失败：无法读取 weiboSpider/config.json：{exc}"},
-            status_code=400,
-        )
-    issues = backup_config_issues(config)
-    if issues:
-        return JSONResponse(
-            {"ok": False, "message": "启动失败：" + "；".join(issues), "config_issues": issues},
-            status_code=400,
-        )
-    ensure_logs_dir()
-    command = spider_command()
-    try:
-        with BACKUP_LOG_PATH.open("ab") as log_fh:
-            process = subprocess.Popen(
-                command,
-                cwd=str(SPIDER_DIR),
-                stdout=log_fh,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-    except Exception as exc:
-        return JSONResponse(
-            {
-                "ok": False,
-                "message": f"启动失败：{exc}",
-                "command": command,
-                "cwd": str(SPIDER_DIR),
-                "log_path": str(BACKUP_LOG_PATH),
-            },
-            status_code=500,
-        )
-    BACKUP_PID_PATH.write_text(str(process.pid) + "\n", encoding="utf-8")
-    return JSONResponse({"ok": True, "pid": process.pid, "log_path": str(BACKUP_LOG_PATH)})
+    return json_response_from_result(start_backup_process())
 
 
 def signal_backup_process(pid: int, sig: int):

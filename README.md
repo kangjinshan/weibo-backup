@@ -8,6 +8,7 @@
 
 - 首次访问监控后台时设置访问密码，之后必须登录才能访问 API、媒体文件和备份控制。
 - 在网页弹层里配置账号、日期范围、是否下载图片/视频。
+- 可在网页弹层里开启每日自动备份，并选择 00:00 到 23:00 的整点执行时间。
 - 在启动备份前检查账号 ID 和 cookie 是否仍是示例值；页面可粘贴更新 cookie，但只显示 cookie 状态，不回显真实 cookie。
 - 启动、暂停、继续、停止微博备份进程。
 - 查看备份进度、日期日历、微博列表、本地图片和视频。
@@ -93,6 +94,19 @@ http://127.0.0.1:8765/
 
 部署或更新后可以先访问 `/api/auth/status` 做烟测；如果登录时提示 `Not Found`，通常说明后台还在运行旧进程，需要重启 `scripts/start_dashboard.sh` 或对应容器/服务后再试。不要把临时初始密码写入 README、脚本、环境模板或任何会提交到 Git 的文件。
 
+## 每日自动备份
+
+登录后台后打开“备份设置”，开启“每日自动备份”并选择整点执行时间，再保存配置。设置会写入本地 `weiboSpider/config.json`：
+
+```json
+{
+  "auto_backup_enabled": true,
+  "auto_backup_hour": 3
+}
+```
+
+定时任务由 FastAPI 后台进程负责执行，因此 `scripts/start_dashboard.sh`、Docker 容器或系统服务必须保持运行。到点时后台会复用手动“启动备份”的检查逻辑：如果已有备份正在运行或暂停，会跳过本次；如果账号 ID 或 cookie 无效，不会启动爬虫。时间默认按 `Asia/Shanghai` 计算，且只支持整点；如需换时区，可设置 `WEIBO_AUTO_BACKUP_TIMEZONE`。
+
 ## Docker 部署
 
 NAS 上如果系统 Python 太旧，推荐用 Docker：
@@ -126,6 +140,7 @@ WEIBO_DASHBOARD_SSL_CERTFILE=/path/to/fullchain.pem
 WEIBO_DASHBOARD_SSL_KEYFILE=/path/to/privkey.pem
 WEIBO_DASHBOARD_AUTH_PATH=/path/to/weibo-backup/logs/dashboard-auth.json
 WEIBO_DASHBOARD_COOKIE_SECURE=1
+WEIBO_AUTO_BACKUP_TIMEZONE=Asia/Shanghai
 ```
 
 设置 `WEIBO_DASHBOARD_SSL_CERTFILE` 和 `WEIBO_DASHBOARD_SSL_KEYFILE` 后，后台会直接以 HTTPS 方式监听 `WEIBO_DASHBOARD_PORT`。
@@ -162,3 +177,4 @@ bash -n scripts/setup_nas.sh scripts/start_dashboard.sh
 - 新机器不要复用复制来的旧 `dashboard/venv/` 或 `weiboSpider/venv/`，运行 `scripts/setup_nas.sh` 重新创建根目录 `.venv`。
 - Docker 运行时不要依赖挂载目录里的旧 `weiboSpider/venv/`；后台启动爬虫会跳过不可执行或无法启动的 venv Python，改用容器当前 Python。不要把 `WEIBO_SPIDER_PYTHON` 指向 `/app/weiboSpider/venv/bin/python`。
 - 备份默认以当前已备份的最近一天作为开始日期，以今天作为结束日期，适合每天做增量备份。
+- 每日自动备份依赖监控后台常驻运行；后台停止或容器退出期间不会补跑错过的时间点。

@@ -2,13 +2,13 @@
 
 ## 系统概述
 
-`weibo-backup` 是一个可公开发布的本地微博备份工作区。它用 `weiboSpider` 抓取微博内容、图片和视频，用 FastAPI 网页监控备份进度、配置增量备份，并浏览本地归档。
+`weibo-backup` 是一个可公开发布的本地微博备份工作区。它用 `weiboSpider` 抓取微博内容、图片和视频，用 FastAPI 网页监控备份进度、配置增量备份、安排每日自动备份，并浏览本地归档。
 
 仓库不包含真实微博数据、媒体文件、SQLite 数据库、cookie 或后台访问密码。真实运行配置来自本地 `weiboSpider/config.json`，公开仓库只提交 `weiboSpider/config.example.json`；后台首次访问密码的哈希文件默认写入 `logs/dashboard-auth.json`。
 
 业务边界：
 
-- 负责本地备份、备份状态监控、网页浏览和 NAS 部署。
+- 负责本地备份、每日自动备份调度、备份状态监控、网页浏览和 NAS 部署。
 - 不负责微博账号登录流程本身；认证依赖用户自行填写 `weiboSpider/config.json` 中的 cookie。
 - 不负责云端存储同步；账号目录、`data/*.db`、图片和视频都是本地运行产物，不应提交到 Git。
 
@@ -24,8 +24,8 @@
 
 | 目录 | 职责 | 关键说明 |
 | --- | --- | --- |
-| `dashboard/` | 监控后台与 API | `server.py` 暴露统计、微博列表、媒体文件、备份配置和进程控制接口 |
-| `dashboard/static/` | 单页监控界面 | `index.html` 内含首次设置/登录门、日历、微博列表筛选、备份弹层、图片灯箱和自动刷新逻辑 |
+| `dashboard/` | 监控后台与 API | `server.py` 暴露统计、微博列表、媒体文件、备份配置、每日自动备份调度和进程控制接口 |
+| `dashboard/static/` | 单页监控界面 | `index.html` 内含首次设置/登录门、日历、微博列表筛选、备份弹层、每日自动备份设置、图片灯箱和自动刷新逻辑 |
 | `weiboSpider/` | 微博爬虫主体 | 包含上游爬虫源码、示例配置和写入逻辑；`config.json` 为本地私密文件，不提交 |
 | `weiboSpider/weibo_spider/` | 抓取、解析、下载、写入核心包 | `spider.py` 调度解析器、下载器和 writers |
 | `scripts/` | 部署与启动脚本 | `setup_nas.sh` 创建根 `.venv`；`start_dashboard.sh` 启动 Uvicorn |
@@ -76,15 +76,22 @@
 
 - **保存网页备份配置**
   - 入口：`POST /api/backup-config` -> `dashboard.server.save_backup_config`
-  - 核心逻辑：`sanitize_backup_config()`、`write_json_atomic()`
+  - 核心逻辑：`sanitize_backup_config()`、`auto_backup_settings()`、`write_json_atomic()`
   - 副作用：备份旧 `weiboSpider/config.json` 为本地 `.before-dashboard-*` 文件，再写入新配置；这些备份文件不提交
   - 注意：网页可通过可选 `cookie` 字段写入新 cookie，但读取 API 只能暴露 `cookie_configured` 和 `config_issues`，不能返回真实 cookie
+  - 注意：每日自动备份配置保存为 `auto_backup_enabled` 和 `auto_backup_hour`；小时必须规范化为 0 到 23 的整数
 
 - **启动/暂停/继续/停止备份**
   - 入口：`POST /api/backup/start|pause|resume|stop`
-  - 核心逻辑：`backup_config_issues()`、`spider_command()`、`get_backup_process_status()`、`signal_backup_process()`
+  - 核心逻辑：`start_backup_process()`、`backup_config_issues()`、`spider_command()`、`get_backup_process_status()`、`signal_backup_process()`
   - 副作用：创建或读取 `logs/backup.pid`，通过进程组信号控制爬虫
   - 启动前会检查 `user_id_list` 和 `cookie` 是否仍是示例值；失败时必须返回 JSON 错误，避免前端解析纯文本 500
+
+- **每日自动备份**
+  - 入口：FastAPI startup task -> `auto_backup_scheduler()`
+  - 核心逻辑：`auto_backup_settings()`、`next_auto_backup_at()`、`run_scheduled_backup_once()`、`start_backup_process()`
+  - 副作用：后台进程常驻时按 `weiboSpider/config.json` 中的 `auto_backup_enabled` 和 `auto_backup_hour` 每天触发一次备份
+  - 注意：时间默认按 `Asia/Shanghai` 计算，可通过 `WEIBO_AUTO_BACKUP_TIMEZONE` 覆盖；只支持整点；如果备份正在 running/paused，则跳过本次，不能启动重复爬虫；后台停机期间错过的时间点不补跑
 
 - **运行原始微博抓取**
   - 入口：`python -m weibo_spider --config_path=... --output_dir=...`
@@ -107,6 +114,9 @@
 - 公开仓库使用 `weiboSpider/config.example.json` 作为配置模板。
 - 默认 SQLite 路径是 `../data/weibo.db`，该路径相对 `weiboSpider/` 目录解析。
 - 当前备份配置 `write_mode` 应包含 `sqlite`，否则网页无法读取新微博。
+- 每日自动备份配置只允许整点小时，`auto_backup_hour` 必须保存为 0 到 23 的整数；未配置时默认关闭并使用 03:00。
+- 自动备份时间不能依赖容器默认本地时区；Docker 容器可能是 UTC，必须通过 `auto_backup_timezone()` 使用 `Asia/Shanghai` 或 `WEIBO_AUTO_BACKUP_TIMEZONE`。
+- 自动备份必须复用手动启动备份的校验逻辑，不能绕过账号 ID、cookie、运行中状态或 Python 可执行性检查。
 - JSON 写入必须使用临时文件替换方式，避免半写入损坏主数据。
 - 媒体文件路径在 JSON 中应使用相对路径，不要写入本机绝对路径。
 - 后台默认只寻找根目录下包含 JSON 的账号目录；`dashboard/`、`logs/`、`scripts/`、`tests/`、`weiboSpider/`、`data/` 等服务目录必须排除。
