@@ -342,6 +342,64 @@ class DashboardTests(unittest.TestCase):
             {"enabled": True, "hour": 3},
         )
 
+    def test_cookie_keepalive_calls_weibo_cn_user_info_with_cookie(self):
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def getcode(self):
+                return self.status
+
+            def read(self, size=-1):
+                return "<html><title>金山的微博</title></html>".encode("utf-8")
+
+        seen = {}
+
+        def fake_urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["headers"] = dict(request.header_items())
+            seen["timeout"] = timeout
+            return FakeResponse()
+
+        config = {"user_id_list": ["1639733600"], "cookie": "SUB=secret; MLOGIN=1"}
+
+        with patch.object(server, "urlopen", side_effect=fake_urlopen):
+            result = server.request_cookie_keepalive(config)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(seen["url"], "https://weibo.cn/1639733600/info")
+        self.assertEqual(seen["headers"]["Cookie"], "SUB=secret; MLOGIN=1")
+        self.assertNotIn("SUB=secret", json.dumps(result))
+
+    def test_cookie_keepalive_reports_expired_login_page(self):
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def getcode(self):
+                return self.status
+
+            def read(self, size=-1):
+                return "<html><title>登录 - 新</title></html>".encode("utf-8")
+
+        config = {"user_id_list": ["1639733600"], "cookie": "SUB=old; MLOGIN=1"}
+
+        with patch.object(server, "urlopen", return_value=FakeResponse()):
+            result = server.request_cookie_keepalive(config)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["message"], "cookie appears expired")
+
     def test_backup_status_reports_paused_for_stopped_pid(self):
         with tempfile.TemporaryDirectory() as tmp:
             pid_path = Path(tmp) / "backup.pid"

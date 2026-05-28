@@ -37,13 +37,13 @@ weiboSpider/config.json
 
 `sqlite_config` 是相对 `weiboSpider/` 目录解析的路径。默认 `../data/weibo.db` 表示数据库在项目根目录的 `data/weibo.db`。
 
-网页端只显示 cookie 是否已配置，不会回显真实 cookie。如果点击“启动备份”时提示 cookie 未配置或仍是示例值，可以在“备份设置”的“更新 Cookie”里粘贴新的 cookie 并保存，也可以回到 NAS 终端编辑 `weiboSpider/config.json`，把 `cookie` 从示例值替换为当前可用的微博登录 cookie。
+网页端只显示 cookie 是否已配置，不会回显真实 cookie。如果点击“启动备份”时提示 cookie 未配置或仍是示例值，可以在“备份设置”的“更新 Cookie”里粘贴新的 cookie 并保存，也可以回到 NAS 终端编辑 `weiboSpider/config.json`，把 `cookie` 从示例值替换为当前可用的微博移动版登录 cookie。
 
 获取可用 cookie：
 
-1. 在自己的电脑浏览器登录微博网页。
+1. 在自己的电脑浏览器打开 `https://passport.weibo.cn/signin/login` 并登录。
 2. 打开开发者工具的 Network/网络面板，刷新微博页面。
-3. 点开任意发往 `weibo.com` 的请求，复制 Request Headers 里的完整 `Cookie` 值。
+3. 跳转或刷新 `https://weibo.cn`，点开发往 `weibo.cn` 的请求，复制 Request Headers 里的完整 `Cookie` 值。
 4. 在 NAS 监控页面“备份设置”中粘贴到“更新 Cookie”，或写入 `weiboSpider/config.json` 的 `cookie` 字段。
 
 不要把 cookie 发到聊天、日志、截图或 Git 仓库里；它等同于当前微博登录态。
@@ -69,6 +69,8 @@ curl http://127.0.0.1:8765/api/auth/status
 ```
 
 如果启动备份失败，先看网页弹层提示；后台会在真正启动爬虫前检查 `user_id_list` 和 `cookie`，并把缺失配置作为 JSON 返回，避免浏览器出现 `Unexpected token` 一类的解析错误。
+
+后台常驻时会每小时读取当前 cookie，并访问一次第一个账号的 `https://weibo.cn/{user_id}/info` 做登录态保活。结果写入 `logs/cookie-keepalive.log`，不会记录真实 cookie。如果保活日志提示 cookie 已过期，仍需要重新获取并保存新的 `weibo.cn` cookie。
 
 ## Docker 启动
 

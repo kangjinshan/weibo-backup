@@ -17,6 +17,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, unquote
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, HTTPException, Request
@@ -42,6 +44,7 @@ CONFIG_PATH = SPIDER_DIR / "config.json"
 LOGS_DIR = BACKUP_DIR / "logs"
 BACKUP_PID_PATH = LOGS_DIR / "backup.pid"
 BACKUP_LOG_PATH = LOGS_DIR / "backup-run.log"
+COOKIE_KEEPALIVE_LOG_PATH = LOGS_DIR / "cookie-keepalive.log"
 AUTH_CONFIG_PATH = Path(
     os.environ.get("WEIBO_DASHBOARD_AUTH_PATH", str(LOGS_DIR / "dashboard-auth.json"))
 ).expanduser()
@@ -74,7 +77,14 @@ USER_ID_PLACEHOLDER_VALUES = {
 DEFAULT_AUTO_BACKUP_HOUR = 3
 DEFAULT_AUTO_BACKUP_TIMEZONE = "Asia/Shanghai"
 AUTO_BACKUP_TIMEZONE_ENV = "WEIBO_AUTO_BACKUP_TIMEZONE"
+COOKIE_KEEPALIVE_INTERVAL_SECONDS = 60 * 60
+COOKIE_KEEPALIVE_TIMEOUT_SECONDS = 20
+COOKIE_KEEPALIVE_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+)
 AUTO_BACKUP_TASK: Optional[asyncio.Task] = None
+COOKIE_KEEPALIVE_TASK: Optional[asyncio.Task] = None
 PUBLIC_AUTH_PATHS = {
     "/",
     "/api/auth/status",
@@ -282,6 +292,51 @@ def backup_config_issues(config: dict) -> list[str]:
     if not cookie_is_configured(config):
         issues.append("cookie 未配置或仍是示例值，请在 NAS 的 weiboSpider/config.json 中填写有效微博 cookie")
     return issues
+
+
+def cookie_keepalive_url(config: dict) -> str:
+    user_ids = parse_user_ids(config.get("user_id_list"))
+    if user_ids:
+        return f"https://weibo.cn/{quote(user_ids[0], safe='')}/info"
+    return "https://weibo.cn/"
+
+
+def append_cookie_keepalive_log(message: str):
+    try:
+        ensure_logs_dir()
+        timestamp = datetime.now(auto_backup_timezone()).strftime("%Y-%m-%d %H:%M:%S %Z")
+        with COOKIE_KEEPALIVE_LOG_PATH.open("a", encoding="utf-8") as log_fh:
+            log_fh.write(f"{timestamp} {message}\n")
+    except Exception:
+        pass
+
+
+def request_cookie_keepalive(config: dict) -> dict:
+    if backup_config_issues(config):
+        return {"ok": False, "skipped": True, "message": "cookie or user_id is not configured"}
+
+    cookie = str(config.get("cookie") or "").strip()
+    url = cookie_keepalive_url(config)
+    request = UrlRequest(
+        url,
+        headers={
+            "User-Agent": COOKIE_KEEPALIVE_USER_AGENT,
+            "Cookie": cookie,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    with urlopen(request, timeout=COOKIE_KEEPALIVE_TIMEOUT_SECONDS) as response:
+        status_code = int(getattr(response, "status", response.getcode()))
+        body = response.read(40_000).decode("utf-8", errors="ignore")
+
+    logged_out = (
+        "登录 - 新" in body
+        or "<title>新浪</title>" in body
+        or "passport.weibo.cn" in body
+    )
+    if logged_out:
+        return {"ok": False, "status_code": status_code, "message": "cookie appears expired"}
+    return {"ok": 200 <= status_code < 400, "status_code": status_code, "url": url}
 
 
 def sqlite_db_path():
@@ -551,6 +606,38 @@ async def run_scheduled_backup_once() -> dict:
     return start_backup_process()
 
 
+async def run_cookie_keepalive_once() -> dict:
+    try:
+        config = read_backup_config()
+    except Exception as exc:
+        result = {"ok": False, "message": f"failed to read config: {exc}"}
+        append_cookie_keepalive_log(result["message"])
+        return result
+
+    try:
+        result = await asyncio.to_thread(request_cookie_keepalive, config)
+    except Exception as exc:
+        result = {"ok": False, "message": f"request failed: {exc}"}
+
+    if result.get("skipped"):
+        return result
+    if result.get("ok"):
+        append_cookie_keepalive_log(
+            f"ok status={result.get('status_code')} url={result.get('url')}"
+        )
+    else:
+        append_cookie_keepalive_log(
+            f"failed status={result.get('status_code')} message={result.get('message', '')}"
+        )
+    return result
+
+
+async def cookie_keepalive_scheduler():
+    while True:
+        await run_cookie_keepalive_once()
+        await asyncio.sleep(COOKIE_KEEPALIVE_INTERVAL_SECONDS)
+
+
 async def auto_backup_scheduler():
     while True:
         try:
@@ -595,6 +682,13 @@ async def start_auto_backup_scheduler():
         AUTO_BACKUP_TASK = asyncio.create_task(auto_backup_scheduler())
 
 
+@app.on_event("startup")
+async def start_cookie_keepalive_scheduler():
+    global COOKIE_KEEPALIVE_TASK
+    if COOKIE_KEEPALIVE_TASK is None or COOKIE_KEEPALIVE_TASK.done():
+        COOKIE_KEEPALIVE_TASK = asyncio.create_task(cookie_keepalive_scheduler())
+
+
 @app.on_event("shutdown")
 async def stop_auto_backup_scheduler():
     global AUTO_BACKUP_TASK
@@ -605,6 +699,18 @@ async def stop_auto_backup_scheduler():
         except asyncio.CancelledError:
             pass
         AUTO_BACKUP_TASK = None
+
+
+@app.on_event("shutdown")
+async def stop_cookie_keepalive_scheduler():
+    global COOKIE_KEEPALIVE_TASK
+    if COOKIE_KEEPALIVE_TASK is not None:
+        COOKIE_KEEPALIVE_TASK.cancel()
+        try:
+            await COOKIE_KEEPALIVE_TASK
+        except asyncio.CancelledError:
+            pass
+        COOKIE_KEEPALIVE_TASK = None
 
 
 def get_stats():

@@ -9,6 +9,7 @@
 - 首次访问监控后台时设置访问密码，之后必须登录才能访问 API、媒体文件和备份控制。
 - 在网页弹层里配置账号、日期范围、是否下载图片/视频。
 - 可在网页弹层里开启每日自动备份，并选择 00:00 到 23:00 的整点执行时间。
+- 后台常驻时会每小时用已配置的 cookie 访问一次 `weibo.cn` 用户资料页，尽量维持微博移动版登录态。
 - 在启动备份前检查账号 ID 和 cookie 是否仍是示例值；页面可粘贴更新 cookie，但只显示 cookie 状态，不回显真实 cookie。
 - 启动、暂停、继续、停止微博备份进程。
 - 查看备份进度、日期日历、微博列表、本地图片和视频。
@@ -63,13 +64,13 @@ bash scripts/setup_nas.sh
 
 保留 `write_mode` 中的 `sqlite`，否则网页无法从 SQLite 读取新微博。
 
-网页不会回显真实 cookie。NAS 上如果启动备份提示 cookie 未配置或仍是示例值，可以在“备份设置”的“更新 Cookie”里粘贴当前浏览器登录微博后的 cookie 并保存，也可以直接编辑 `weiboSpider/config.json`。
+网页不会回显真实 cookie。NAS 上如果启动备份提示 cookie 未配置或仍是示例值，可以在“备份设置”的“更新 Cookie”里粘贴当前浏览器登录微博移动版后的 cookie 并保存，也可以直接编辑 `weiboSpider/config.json`。
 
 获取可用 cookie 的常用方式：
 
-1. 在自己的电脑浏览器登录微博网页。
+1. 在自己的电脑浏览器打开 `https://passport.weibo.cn/signin/login` 并登录。
 2. 打开浏览器开发者工具的 Network/网络面板，刷新微博页面。
-3. 找到发往 `weibo.com` 的请求，复制 Request Headers 里的完整 `Cookie` 请求头值。
+3. 跳转或刷新 `https://weibo.cn`，找到发往 `weibo.cn` 的请求，复制 Request Headers 里的完整 `Cookie` 请求头值。
 4. 粘贴到网页“更新 Cookie”输入框或 `weiboSpider/config.json` 的 `cookie` 字段。
 
 3. 启动监控后台：
@@ -106,6 +107,8 @@ http://127.0.0.1:8765/
 ```
 
 定时任务由 FastAPI 后台进程负责执行，因此 `scripts/start_dashboard.sh`、Docker 容器或系统服务必须保持运行。到点时后台会复用手动“启动备份”的检查逻辑：如果已有备份正在运行或暂停，会跳过本次；如果账号 ID 或 cookie 无效，不会启动爬虫。时间默认按 `Asia/Shanghai` 计算，且只支持整点；如需换时区，可设置 `WEIBO_AUTO_BACKUP_TIMEZONE`。
+
+后台进程启动后还会每小时执行一次 cookie 保活请求：读取 `weiboSpider/config.json` 中的 cookie，访问第一个 `user_id_list` 对应的 `https://weibo.cn/{user_id}/info`。保活结果写入 `logs/cookie-keepalive.log`，不会写入或回显真实 cookie。如果日志提示 cookie 已过期，仍需要重新从 `weibo.cn` 获取并保存新的 cookie。
 
 ## Docker 部署
 

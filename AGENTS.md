@@ -93,6 +93,12 @@
   - 副作用：后台进程常驻时按 `weiboSpider/config.json` 中的 `auto_backup_enabled` 和 `auto_backup_hour` 每天触发一次备份
   - 注意：时间默认按 `Asia/Shanghai` 计算，可通过 `WEIBO_AUTO_BACKUP_TIMEZONE` 覆盖；只支持整点；如果备份正在 running/paused，则跳过本次，不能启动重复爬虫；后台停机期间错过的时间点不补跑
 
+- **微博 Cookie 保活**
+  - 入口：FastAPI startup task -> `cookie_keepalive_scheduler()`
+  - 核心逻辑：`request_cookie_keepalive()`、`cookie_keepalive_url()`、`append_cookie_keepalive_log()`
+  - 副作用：后台进程常驻时每小时读取 `weiboSpider/config.json` 的 cookie，并访问第一个账号的 `https://weibo.cn/{user_id}/info`；结果写入 `logs/cookie-keepalive.log`
+  - 注意：保活只能使用 `weibo.cn` cookie，不能改成 `weibo.com`；日志和 API 不能输出真实 cookie；如果保活返回登录页，仍需要用户重新获取并保存新 cookie
+
 - **运行原始微博抓取**
   - 入口：`python -m weibo_spider --config_path=... --output_dir=...`
   - 核心逻辑：`weiboSpider/weibo_spider/spider.py`
@@ -117,6 +123,7 @@
 - 每日自动备份配置只允许整点小时，`auto_backup_hour` 必须保存为 0 到 23 的整数；未配置时默认关闭并使用 03:00。
 - 自动备份时间不能依赖容器默认本地时区；Docker 容器可能是 UTC，必须通过 `auto_backup_timezone()` 使用 `Asia/Shanghai` 或 `WEIBO_AUTO_BACKUP_TIMEZONE`。
 - 自动备份必须复用手动启动备份的校验逻辑，不能绕过账号 ID、cookie、运行中状态或 Python 可执行性检查。
+- Cookie 保活必须访问 `weibo.cn` 域名，并使用当前 `config.json` 中的 cookie 请求头；不得把 cookie 写入日志、API 响应或文档。
 - JSON 写入必须使用临时文件替换方式，避免半写入损坏主数据。
 - 媒体文件路径在 JSON 中应使用相对路径，不要写入本机绝对路径。
 - 后台默认只寻找根目录下包含 JSON 的账号目录；`dashboard/`、`logs/`、`scripts/`、`tests/`、`weiboSpider/`、`data/` 等服务目录必须排除。
