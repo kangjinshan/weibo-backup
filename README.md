@@ -145,10 +145,14 @@ WEIBO_DASHBOARD_COOKIE_SECURE=1
 python3 sync_sqlite_from_json.py
 ```
 
+## 时间与时区
+
+微博发布时间按东八区 `Asia/Shanghai` 解析和保存。即使 Docker 容器或 NAS 系统默认时区是 UTC，爬虫遇到“刚刚”“几分钟前”“今天 06:26”或“06月01日 06:26”这类微博相对时间时，也会写入北京时间。
+
 ## 测试
 
 ```bash
-python3 -m unittest tests/test_sqlite_store.py tests/test_backup_paths.py tests/test_dashboard.py tests/test_sqlite_writer.py
+python3 -m unittest tests/test_sqlite_store.py tests/test_backup_paths.py tests/test_dashboard.py tests/test_sqlite_writer.py tests/test_page_parser_time.py
 python3 -m py_compile sqlite_store.py sync_sqlite_from_json.py backup_paths.py dashboard/server.py
 bash -n scripts/setup_nas.sh scripts/start_dashboard.sh
 ```
@@ -162,3 +166,4 @@ bash -n scripts/setup_nas.sh scripts/start_dashboard.sh
 - 新机器不要复用复制来的旧 `dashboard/venv/` 或 `weiboSpider/venv/`，运行 `scripts/setup_nas.sh` 重新创建根目录 `.venv`。
 - Docker 运行时不要依赖挂载目录里的旧 `weiboSpider/venv/`；后台启动爬虫会跳过不可执行或无法启动的 venv Python，改用容器当前 Python。不要把 `WEIBO_SPIDER_PYTHON` 指向 `/app/weiboSpider/venv/bin/python`。
 - 备份默认以当前已备份的最近一天作为开始日期，以今天作为结束日期，适合每天做增量备份。
+- 微博发布时间和增量备份保存的 `since_date` 使用东八区时间，不依赖容器默认本地时区。

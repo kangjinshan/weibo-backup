@@ -1,7 +1,12 @@
 import logging
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 
 from .. import datetime_util
 from ..weibo import Weibo
@@ -13,6 +18,12 @@ from .util import handle_garbled, handle_html, to_video_download_url
 MAX_PINNED_COUNT = 2
 
 logger = logging.getLogger('spider.page_parser')
+
+WEIBO_TIMEZONE = ZoneInfo('Asia/Shanghai') if ZoneInfo else timezone(timedelta(hours=8))
+
+
+def weibo_now():
+    return datetime.now(WEIBO_TIMEZONE)
 
 
 class PageParser(Parser):
@@ -201,21 +212,21 @@ class PageParser(Parser):
             str_time = info.xpath("div/span[@class='ct']")
             str_time = handle_garbled(str_time[0])
             publish_time = str_time.split(u'来自')[0]
+            now = weibo_now()
             if u'刚刚' in publish_time:
-                publish_time = datetime.now().strftime('%Y-%m-%d %H:%M')
+                publish_time = now.strftime('%Y-%m-%d %H:%M')
             elif u'分钟' in publish_time:
                 minute = publish_time[:publish_time.find(u'分钟')]
                 minute = timedelta(minutes=int(minute))
-                publish_time = (datetime.now() -
-                                minute).strftime('%Y-%m-%d %H:%M')
+                publish_time = (now - minute).strftime('%Y-%m-%d %H:%M')
             elif u'今天' in publish_time:
-                today = datetime.now().strftime('%Y-%m-%d')
+                today = now.strftime('%Y-%m-%d')
                 time = publish_time[3:]
                 publish_time = today + ' ' + time
                 if len(publish_time) > 16:
                     publish_time = publish_time[:16]
             elif u'月' in publish_time:
-                year = datetime.now().strftime('%Y')
+                year = now.strftime('%Y')
                 month = publish_time[0:2]
                 day = publish_time[3:5]
                 time = publish_time[7:12]

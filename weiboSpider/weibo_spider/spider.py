@@ -10,7 +10,7 @@ import shutil
 import sys
 import asyncio
 import aiohttp
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from time import sleep
 
 from absl import app, flags
@@ -33,6 +33,17 @@ logging_path = os.path.split(
     os.path.realpath(__file__))[0] + os.sep + 'logging.conf'
 logging.config.fileConfig(logging_path)
 logger = logging.getLogger('spider')
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
+
+WEIBO_TIMEZONE = ZoneInfo('Asia/Shanghai') if ZoneInfo else timezone(timedelta(hours=8))
+
+
+def weibo_now():
+    return datetime.now(WEIBO_TIMEZONE).replace(tzinfo=None)
 
 
 class Spider:
@@ -163,7 +174,7 @@ class Spider:
         try:
             since_date = datetime_util.str_to_time(
                 self.user_config['since_date'])
-            now = datetime.now()
+            now = weibo_now()
             if since_date <= now:
                 # Async fetch page num
                 user_uri = self.user_config['user_uri']
@@ -267,7 +278,7 @@ class Spider:
         self.user_config = user_config
         self.weibo_id_list = []
         if self.end_date == 'now':
-            self.new_since_date = datetime.now().strftime('%Y-%m-%d %H:%M')
+            self.new_since_date = weibo_now().strftime('%Y-%m-%d %H:%M')
         else:
             self.new_since_date = self.end_date
         self.writers = []

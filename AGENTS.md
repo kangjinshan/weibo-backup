@@ -27,7 +27,7 @@
 | `dashboard/` | 监控后台与 API | `server.py` 暴露统计、微博列表、媒体文件、备份配置和进程控制接口 |
 | `dashboard/static/` | 单页监控界面 | `index.html` 内含首次设置/登录门、日历、微博列表筛选、备份弹层、图片灯箱和自动刷新逻辑 |
 | `weiboSpider/` | 微博爬虫主体 | 包含上游爬虫源码、示例配置和写入逻辑；`config.json` 为本地私密文件，不提交 |
-| `weiboSpider/weibo_spider/` | 抓取、解析、下载、写入核心包 | `spider.py` 调度解析器、下载器和 writers |
+| `weiboSpider/weibo_spider/` | 抓取、解析、下载、写入核心包 | `spider.py` 调度解析器、下载器和 writers；微博相对时间按东八区解析 |
 | `scripts/` | 部署与启动脚本 | `setup_nas.sh` 创建根 `.venv`；`start_dashboard.sh` 启动 Uvicorn |
 | `tests/` | 回归测试 | 覆盖后台配置、列表排序、媒体同步、SQLite 迁移和 writer 兼容 |
 | `data/` | 默认数据库目录 | 只提交 `.gitkeep`；真实 `*.db` 不提交 |
@@ -91,6 +91,7 @@
   - 核心逻辑：`weiboSpider/weibo_spider/spider.py`
   - 副作用：按 `write_mode` 写入账号目录和 `sqlite_config` 指向的数据库
   - 注意：`spider_command()` 只选择存在、可执行且能启动的 Python；Docker 挂载的旧 `weiboSpider/venv/bin/python` 可能存在但不可执行，必须跳过
+  - 注意：微博发布时间和 `end_date=now` 时保存的 `since_date` 必须使用东八区 `Asia/Shanghai`，不能依赖容器默认本地时区
 
 - **以 JSON 重建 SQLite**
   - 入口：`sync_sqlite_from_json.py`
@@ -107,6 +108,7 @@
 - 公开仓库使用 `weiboSpider/config.example.json` 作为配置模板。
 - 默认 SQLite 路径是 `../data/weibo.db`，该路径相对 `weiboSpider/` 目录解析。
 - 当前备份配置 `write_mode` 应包含 `sqlite`，否则网页无法读取新微博。
+- 微博页面中的“刚刚”“几分钟前”“今天”和“xx月xx日”发布时间必须按东八区解析并保存；Docker/NAS 默认 UTC 时不能写入 UTC 时间。
 - JSON 写入必须使用临时文件替换方式，避免半写入损坏主数据。
 - 媒体文件路径在 JSON 中应使用相对路径，不要写入本机绝对路径。
 - 后台默认只寻找根目录下包含 JSON 的账号目录；`dashboard/`、`logs/`、`scripts/`、`tests/`、`weiboSpider/`、`data/` 等服务目录必须排除。
@@ -116,7 +118,7 @@
 ## 常用验证命令
 
 ```bash
-python3 -m unittest tests/test_sqlite_store.py tests/test_backup_paths.py tests/test_dashboard.py tests/test_sqlite_writer.py
+python3 -m unittest tests/test_sqlite_store.py tests/test_backup_paths.py tests/test_dashboard.py tests/test_sqlite_writer.py tests/test_page_parser_time.py
 python3 -m py_compile sqlite_store.py sync_sqlite_from_json.py backup_paths.py dashboard/server.py
 bash -n scripts/setup_nas.sh scripts/start_dashboard.sh
 ```
