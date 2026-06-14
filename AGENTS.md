@@ -76,9 +76,15 @@
 
 - **保存网页备份配置**
   - 入口：`POST /api/backup-config` -> `dashboard.server.save_backup_config`
-  - 核心逻辑：`sanitize_backup_config()`、`write_json_atomic()`
+  - 核心逻辑：`sanitize_backup_config()`、`write_json_atomic()`、`inspect_cookie_health()`
   - 副作用：备份旧 `weiboSpider/config.json` 为本地 `.before-dashboard-*` 文件，再写入新配置；这些备份文件不提交
-  - 注意：网页可通过可选 `cookie` 字段写入新 cookie，但读取 API 只能暴露 `cookie_configured` 和 `config_issues`，不能返回真实 cookie
+  - 注意：网页可通过可选 `cookie` 字段写入新 cookie；读取 API 只能暴露 `cookie_configured`、`cookie_status` 和 `config_issues`，不能返回真实 cookie
+
+- **检测并自动刷新 Cookie**
+  - 入口：`POST /api/backup/refresh-cookie` -> `dashboard.server.refresh_cookie`
+  - 核心逻辑：`inspect_cookie_health()`、`get_chrome_cookie_string()`、`iter_backup_cookie_candidates()`、`persist_cookie_update()`
+  - 副作用：自动刷新成功时会先备份当前 `weiboSpider/config.json` 到 `.before-auto-cookie-*`，再原子写入新 cookie
+  - 注意：不会通过 API 返回 cookie 明文；自动刷新优先尝试运行环境的 Chrome cookie，失败时回退扫描历史配置备份
 
 - **启动/暂停/继续/停止备份**
   - 入口：`POST /api/backup/start|pause|resume|stop`
@@ -104,7 +110,7 @@
 - `logs/dashboard-auth.json` 是本地私密文件，包含后台访问密码哈希和会话签名密钥，不能提交、打印到日志或写入文档；忘记密码时应停止服务后删除该文件再重新设置。
 - 后台必须默认保护除首页和 auth setup/login/status 外的 API、媒体文件和备份控制接口。
 - 后台登录 cookie 必须使用 HttpOnly；公网 HTTPS/反向代理部署建议设置 `WEIBO_DASHBOARD_COOKIE_SECURE=1`。
-- 后台和前端只能展示 cookie 是否已配置；配置保存接口可接收新 cookie，但不得通过读取 API 返回真实 cookie 内容。
+- 后台和前端只能展示 cookie 是否已配置与可用性状态；配置保存和自动刷新接口可写入新 cookie，但不得通过读取 API 返回真实 cookie 内容。
 - 公开仓库使用 `weiboSpider/config.example.json` 作为配置模板。
 - 默认 SQLite 路径是 `../data/weibo.db`，该路径相对 `weiboSpider/` 目录解析。
 - 当前备份配置 `write_mode` 应包含 `sqlite`，否则网页无法读取新微博。

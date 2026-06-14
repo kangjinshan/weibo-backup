@@ -105,12 +105,15 @@ class DashboardTests(unittest.TestCase):
             "id=\"backupModal\"",
             "id=\"configUserIds\"",
             "id=\"configCookieStatus\"",
+            "id=\"configCookieHealth\"",
             "id=\"configCookieInput\"",
             "id=\"configSinceDate\"",
             "id=\"configEndDate\"",
             "id=\"configPicDownload\"",
             "id=\"configVideoDownload\"",
             "/api/backup-config",
+            "/api/backup/refresh-cookie",
+            "refreshCookieAutomatically",
             "/api/backup/${action}",
             "startBackupFromModal",
             "backupAction('pause')",
@@ -339,6 +342,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(payload["end_date"], "2026-05-22")
         self.assertTrue(payload["cookie_configured"])
         self.assertEqual(payload["config_issues"], [])
+        self.assertIn("cookie_status", payload)
 
     def test_backup_config_reports_placeholder_cookie_without_exposing_value(self):
         current_config = {
@@ -407,7 +411,97 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["cookie_configured"])
         self.assertEqual(payload["config_issues"], [])
+        self.assertIn("cookie_status", payload)
         self.assertNotIn("SUB=new-cookie", response.body.decode("utf-8"))
+
+    def test_cookie_health_reports_expired_when_redirected_to_login(self):
+        class _FakeResponse:
+            def __init__(self, url: str, body: str):
+                self._url = url
+                self._body = body.encode("utf-8")
+
+            def geturl(self):
+                return self._url
+
+            def read(self, *_args, **_kwargs):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch.object(
+            server.urllib_request,
+            "urlopen",
+            return_value=_FakeResponse(
+                "https://passport.weibo.com/sso/login",
+                "<html><title>新浪通行证</title></html>",
+            ),
+        ):
+            status = server.inspect_cookie_health("SUB=token", "https://weibo.cn/1639733600/info")
+
+        self.assertEqual(status["state"], "expired")
+        self.assertFalse(status["valid"])
+
+    def test_refresh_cookie_uses_chrome_cookie_when_current_is_expired(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = tmp_path / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "user_id_list": ["1639733600"],
+                        "cookie": "SUB=old-cookie",
+                        "write_mode": ["sqlite"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(server, "CONFIG_PATH", config_path),
+                patch.object(server, "SPIDER_DIR", tmp_path),
+                patch.object(server, "LOGS_DIR", tmp_path),
+                patch.object(
+                    server,
+                    "inspect_cookie_health",
+                    side_effect=[
+                        {"state": "expired", "valid": False, "message": "expired"},
+                        {"state": "valid", "valid": True, "message": "valid"},
+                    ],
+                ),
+                patch.object(server, "get_chrome_cookie_string", return_value=("SUB=new-cookie", None)),
+            ):
+                response = asyncio.run(server.refresh_cookie())
+                saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+        payload = json.loads(response.body)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["updated"])
+        self.assertEqual(payload["source"], "chrome")
+        self.assertEqual(saved["cookie"], "SUB=new-cookie")
+        self.assertNotIn("SUB=new-cookie", response.body.decode("utf-8"))
+
+    def test_refresh_cookie_returns_error_when_no_valid_source(self):
+        current_config = {
+            "user_id_list": ["1639733600"],
+            "cookie": "SUB=old-cookie",
+            "write_mode": ["sqlite"],
+        }
+        with (
+            patch.object(server, "read_backup_config", return_value=current_config),
+            patch.object(server, "inspect_cookie_health", return_value={"state": "expired", "valid": False, "message": "expired"}),
+            patch.object(server, "get_chrome_cookie_string", return_value=(None, "chrome unavailable")),
+            patch.object(server, "iter_backup_cookie_candidates", return_value=[]),
+        ):
+            response = asyncio.run(server.refresh_cookie())
+
+        payload = json.loads(response.body)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(payload["ok"])
+        self.assertIn("自动获取失败", payload["message"])
 
     def test_spider_command_skips_non_executable_venv_python(self):
         with tempfile.TemporaryDirectory() as tmp:

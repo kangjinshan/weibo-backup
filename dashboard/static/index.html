@@ -973,6 +973,10 @@ body {
           <input id="configCookieStatus" type="text" readonly>
         </div>
         <div class="field full">
+          <label for="configCookieHealth">Cookie 可用性</label>
+          <input id="configCookieHealth" type="text" readonly>
+        </div>
+        <div class="field full">
           <label for="configCookieInput">更新 Cookie</label>
           <textarea id="configCookieInput" autocomplete="off" placeholder="粘贴新的微博 Cookie；留空则保持当前 Cookie"></textarea>
         </div>
@@ -1000,6 +1004,9 @@ body {
       <div class="settings-actions">
         <button class="action-button" onclick="saveBackupConfig()">
           <span class="material-icons-outlined">save</span>保存配置
+        </button>
+        <button class="action-button" onclick="refreshCookieAutomatically()">
+          <span class="material-icons-outlined">sync</span>自动获取新 Cookie
         </button>
         <button class="action-button primary" onclick="startBackupFromModal()">
           <span class="material-icons-outlined">play_arrow</span>启动备份
@@ -1641,9 +1648,20 @@ function showBackupFeedback(message, type = '') {
   el.textContent = message;
 }
 
+function cookieHealthText(cookieStatus, cookieConfigured) {
+  if (!cookieConfigured) {
+    return '未配置';
+  }
+  if (!cookieStatus || cookieStatus.valid === null || cookieStatus.valid === undefined) {
+    return '未知（检测失败）';
+  }
+  return cookieStatus.valid ? '有效' : '疑似过期';
+}
+
 function fillBackupConfig(config) {
   document.getElementById('configUserIds').value = (config.user_id_list || []).join(', ');
   document.getElementById('configCookieStatus').value = config.cookie_configured ? '已配置' : '未配置或仍是示例值';
+  document.getElementById('configCookieHealth').value = cookieHealthText(config.cookie_status, config.cookie_configured);
   document.getElementById('configCookieInput').value = '';
   document.getElementById('configSinceDate').value = config.since_date || '';
   document.getElementById('configEndDate').value = config.end_date || 'now';
@@ -1665,6 +1683,13 @@ function collectBackupConfig() {
   return payload;
 }
 
+function backupFeedbackTypeFromCookieStatus(cookieStatus) {
+  if (!cookieStatus) return '';
+  if (cookieStatus.valid === false) return 'error';
+  if (cookieStatus.valid === true) return 'success';
+  return '';
+}
+
 async function loadBackupConfig() {
   showBackupFeedback('读取配置中...');
   try {
@@ -1676,7 +1701,12 @@ async function loadBackupConfig() {
         ? '当前状态：备份中'
         : '当前状态：已停止';
     const issues = config.config_issues || [];
-    showBackupFeedback(issues.length ? issues.join('；') : statusText, issues.length ? 'error' : '');
+    const cookieMessage = config.cookie_status?.message || '';
+    const infoText = [statusText, cookieMessage].filter(Boolean).join('；');
+    const fallbackText = infoText || statusText;
+    const feedbackMessage = issues.length ? `${issues.join('；')}；${fallbackText}` : fallbackText;
+    const feedbackType = issues.length ? 'error' : backupFeedbackTypeFromCookieStatus(config.cookie_status);
+    showBackupFeedback(feedbackMessage, feedbackType);
   } catch (err) {
     showBackupFeedback(`读取失败：${err.message}`, 'error');
   }
@@ -1701,14 +1731,37 @@ async function saveBackupConfig(options = {}) {
     }
     document.getElementById('configCookieInput').value = '';
     document.getElementById('configCookieStatus').value = result.cookie_configured ? '已配置' : '未配置或仍是示例值';
+    document.getElementById('configCookieHealth').value = cookieHealthText(result.cookie_status, result.cookie_configured);
     if (!options.silent) {
       const issues = result.config_issues || [];
-      showBackupFeedback(issues.length ? `配置已保存；${issues.join('；')}` : '配置已保存', issues.length ? 'error' : 'success');
+      const cookieMessage = result.cookie_status?.message || '';
+      const savedText = ['配置已保存', issues.length ? issues.join('；') : '', cookieMessage].filter(Boolean).join('；');
+      const feedbackType = issues.length ? 'error' : backupFeedbackTypeFromCookieStatus(result.cookie_status) || 'success';
+      showBackupFeedback(savedText, feedbackType);
     }
     return true;
   } catch (err) {
     showBackupFeedback(`保存失败：${err.message}`, 'error');
     return false;
+  }
+}
+
+async function refreshCookieAutomatically() {
+  showBackupFeedback('自动获取 Cookie 中...');
+  try {
+    const result = await postJSON('/api/backup/refresh-cookie');
+    if (!result.ok) {
+      showBackupFeedback(result.message || '自动获取失败', 'error');
+      return;
+    }
+    if (result.cookie_status) {
+      document.getElementById('configCookieHealth').value = cookieHealthText(result.cookie_status, result.cookie_configured);
+      document.getElementById('configCookieStatus').value = result.cookie_configured ? '已配置' : '未配置或仍是示例值';
+    }
+    showBackupFeedback(result.message || 'Cookie 已自动更新', 'success');
+    await loadBackupConfig();
+  } catch (err) {
+    showBackupFeedback(`自动获取失败：${err.message}`, 'error');
   }
 }
 

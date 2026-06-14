@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from urllib import request as urllib_request
 from urllib.parse import quote, unquote
 
 from fastapi import FastAPI, HTTPException, Request
@@ -51,6 +52,9 @@ SESSION_DURATION = timedelta(days=14)
 SPIDER_PYTHON_ENV = os.environ.get("WEIBO_SPIDER_PYTHON")
 SPIDER_PYTHON = Path(SPIDER_PYTHON_ENV).expanduser() if SPIDER_PYTHON_ENV else None
 ROOT_VENV_PYTHON = BACKUP_DIR / ".venv" / "bin" / "python"
+COOKIE_CHECK_TIMEOUT = 12
+COOKIE_CHECK_DEFAULT_USER_ID = "1639733600"
+COOKIE_BACKUP_SCAN_LIMIT = 40
 EXCLUDED_DATA_DIRS = {
     "__pycache__",
     "archive",
@@ -255,12 +259,16 @@ def read_backup_config():
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
-def cookie_is_configured(config: dict) -> bool:
-    cookie = str(config.get("cookie") or "").strip()
+def cookie_string_is_configured(cookie: str) -> bool:
+    cookie = str(cookie or "").strip()
     if not cookie or "=" not in cookie:
         return False
     normalized = cookie.upper()
     return not any(fragment in normalized for fragment in COOKIE_PLACEHOLDER_FRAGMENTS)
+
+
+def cookie_is_configured(config: dict) -> bool:
+    return cookie_string_is_configured(config.get("cookie") or "")
 
 
 def user_ids_are_configured(config: dict) -> bool:
@@ -277,6 +285,138 @@ def backup_config_issues(config: dict) -> list[str]:
     if not cookie_is_configured(config):
         issues.append("cookie 未配置或仍是示例值，请在 NAS 的 weiboSpider/config.json 中填写有效微博 cookie")
     return issues
+
+
+def cookie_probe_url(config: dict) -> str:
+    user_ids = parse_user_ids(config.get("user_id_list"))
+    user_id = user_ids[0] if user_ids else COOKIE_CHECK_DEFAULT_USER_ID
+    return f"https://weibo.cn/{user_id}/info"
+
+
+def decode_html_text(raw: bytes) -> str:
+    for encoding in ("utf-8", "gb18030", "gbk"):
+        try:
+            return raw.decode(encoding)
+        except Exception:
+            continue
+    return raw.decode("utf-8", errors="ignore")
+
+
+def html_title(text: str) -> str:
+    match = re.search(r"<title>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1)).strip()
+
+
+def inspect_cookie_health(cookie: str, probe_url: str, timeout: int = COOKIE_CHECK_TIMEOUT) -> dict:
+    if not cookie_string_is_configured(cookie):
+        return {
+            "state": "missing",
+            "valid": False,
+            "message": "Cookie 未配置或仍是示例值",
+            "probe_url": probe_url,
+        }
+
+    request = urllib_request.Request(
+        probe_url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Cookie": str(cookie),
+        },
+    )
+    try:
+        with urllib_request.urlopen(request, timeout=timeout) as response:
+            final_url = response.geturl()
+            text = decode_html_text(response.read(40_000))
+            title = html_title(text)
+    except Exception as exc:
+        return {
+            "state": "unknown",
+            "valid": None,
+            "message": f"Cookie 状态检测失败：{exc}",
+            "probe_url": probe_url,
+        }
+
+    redirect_login = any(flag in final_url.lower() for flag in ("login", "passport"))
+    title_login = any(flag in title for flag in ("登录", "通行证", "新浪"))
+    has_profile_info = "基本信息" in text or "资料" in title
+    valid = (not redirect_login) and (not title_login) and has_profile_info
+    return {
+        "state": "valid" if valid else "expired",
+        "valid": valid,
+        "message": "Cookie 有效" if valid else "Cookie 疑似已过期，请自动获取或手动更新",
+        "probe_url": probe_url,
+        "title": title,
+    }
+
+
+def get_chrome_cookie_string(domain_name: str = "weibo.cn") -> tuple[Optional[str], Optional[str]]:
+    try:
+        import browser_cookie3
+    except Exception as exc:
+        return None, f"browser_cookie3 不可用：{exc}"
+
+    try:
+        cookie_jar = browser_cookie3.chrome(domain_name=domain_name)
+        cookie_map = {}
+        for cookie in cookie_jar:
+            cookie_map[cookie.name] = cookie.value
+    except Exception as exc:
+        return None, f"读取 Chrome Cookie 失败：{exc}"
+
+    if not cookie_map:
+        return None, "Chrome 中未读取到 weibo.cn Cookie"
+    cookie_string = "; ".join(f"{name}={value}" for name, value in cookie_map.items())
+    return cookie_string, None
+
+
+def iter_backup_cookie_candidates(current_cookie: str = "") -> list[tuple[str, str]]:
+    patterns = (
+        "config.before-dashboard-*.json",
+        "config.before-cookie-refresh-*.json",
+        "config.before-auto-cookie-*.json",
+        "config.repair-backup-*.json",
+    )
+    files = []
+    for pattern in patterns:
+        files.extend(SPIDER_DIR.glob(pattern))
+    files = sorted(
+        {path.resolve() for path in files if path.is_file()},
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )[:COOKIE_BACKUP_SCAN_LIMIT]
+
+    current_digest = hashlib.sha256(str(current_cookie or "").encode("utf-8")).hexdigest()
+    seen_digests = {current_digest}
+    candidates = []
+    for path in files:
+        try:
+            config = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        cookie = str(config.get("cookie") or "").strip()
+        if not cookie_string_is_configured(cookie):
+            continue
+        digest = hashlib.sha256(cookie.encode("utf-8")).hexdigest()
+        if digest in seen_digests:
+            continue
+        seen_digests.add(digest)
+        candidates.append((cookie, f"backup:{path.name}"))
+    return candidates
+
+
+def persist_cookie_update(next_cookie: str) -> tuple[dict, Path]:
+    current = read_backup_config()
+    next_config = dict(current)
+    next_config["cookie"] = next_cookie
+    ensure_logs_dir()
+    backup_path = CONFIG_PATH.with_suffix(
+        f".before-auto-cookie-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    )
+    backup_path.write_bytes(CONFIG_PATH.read_bytes())
+    write_json_atomic(CONFIG_PATH, next_config)
+    return next_config, backup_path
 
 
 def sqlite_db_path():
@@ -808,6 +948,7 @@ async def backup_config():
     config = read_backup_config()
     default_dates = incremental_backup_dates(config)
     issues = backup_config_issues(config)
+    cookie_status = inspect_cookie_health(config.get("cookie", ""), cookie_probe_url(config))
     return JSONResponse(
         {
             "user_id_list": config.get("user_id_list", []),
@@ -817,6 +958,7 @@ async def backup_config():
             "video_download": bool(config.get("video_download")),
             "write_mode": config.get("write_mode", ["csv", "txt", "json", "sqlite"]),
             "cookie_configured": cookie_is_configured(config),
+            "cookie_status": cookie_status,
             "config_issues": issues,
             "status": get_backup_process_status(),
         }
@@ -827,6 +969,7 @@ async def backup_config():
 async def save_backup_config(payload: dict):
     current = read_backup_config()
     next_config = sanitize_backup_config(payload, current)
+    cookie_status = inspect_cookie_health(next_config.get("cookie", ""), cookie_probe_url(next_config))
     ensure_logs_dir()
     backup_path = CONFIG_PATH.with_suffix(
         f".before-dashboard-{time.strftime('%Y%m%d-%H%M%S')}.json"
@@ -838,8 +981,85 @@ async def save_backup_config(payload: dict):
             "ok": True,
             "backup_path": str(backup_path),
             "cookie_configured": cookie_is_configured(next_config),
+            "cookie_status": cookie_status,
             "config_issues": backup_config_issues(next_config),
         }
+    )
+
+
+@app.post("/api/backup/refresh-cookie")
+async def refresh_cookie():
+    try:
+        current = read_backup_config()
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "message": f"自动获取失败：无法读取配置：{exc}"},
+            status_code=400,
+        )
+
+    probe_url = cookie_probe_url(current)
+    current_cookie = str(current.get("cookie") or "")
+    current_status = inspect_cookie_health(current_cookie, probe_url)
+    if current_status.get("valid") is True:
+        return JSONResponse(
+            {
+                "ok": True,
+                "updated": False,
+                "source": "current",
+                "cookie_configured": True,
+                "cookie_status": current_status,
+                "message": "当前 Cookie 仍然有效，无需更新",
+            }
+        )
+
+    browser_cookie, browser_error = get_chrome_cookie_string("weibo.cn")
+    if browser_cookie:
+        browser_status = inspect_cookie_health(browser_cookie, probe_url)
+        if browser_status.get("valid") is True:
+            next_config, backup_path = persist_cookie_update(browser_cookie)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "updated": True,
+                    "source": "chrome",
+                    "backup_path": str(backup_path),
+                    "cookie_configured": cookie_is_configured(next_config),
+                    "cookie_status": browser_status,
+                    "message": "已从 Chrome 自动更新 Cookie",
+                }
+            )
+
+    for candidate_cookie, source in iter_backup_cookie_candidates(current_cookie=current_cookie):
+        candidate_status = inspect_cookie_health(candidate_cookie, probe_url)
+        if candidate_status.get("valid") is True:
+            next_config, backup_path = persist_cookie_update(candidate_cookie)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "updated": True,
+                    "source": source,
+                    "backup_path": str(backup_path),
+                    "cookie_configured": cookie_is_configured(next_config),
+                    "cookie_status": candidate_status,
+                    "message": "已从历史配置中恢复有效 Cookie",
+                }
+            )
+
+    error_details = []
+    if browser_error:
+        error_details.append(browser_error)
+    message = "自动获取失败：未找到有效 Cookie"
+    if error_details:
+        message = f"{message}（{'; '.join(error_details)}）"
+    return JSONResponse(
+        {
+            "ok": False,
+            "updated": False,
+            "cookie_configured": cookie_is_configured(current),
+            "cookie_status": current_status,
+            "message": message,
+        },
+        status_code=400,
     )
 
 
