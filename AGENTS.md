@@ -28,8 +28,8 @@
 | `dashboard/static/` | 单页监控界面 | `index.html` 内含首次设置/登录门、日历、微博列表筛选、备份弹层、图片灯箱和自动刷新逻辑 |
 | `weiboSpider/` | 微博爬虫主体 | 包含上游爬虫源码、示例配置和写入逻辑；`config.json` 为本地私密文件，不提交 |
 | `weiboSpider/weibo_spider/` | 抓取、解析、下载、写入核心包 | `spider.py` 调度解析器、下载器和 writers；微博相对时间按东八区解析 |
-| `scripts/` | 部署与启动脚本 | `setup_nas.sh` 创建根 `.venv`；`start_dashboard.sh` 启动 Uvicorn |
-| `tests/` | 回归测试 | 覆盖后台配置、列表排序、媒体同步、SQLite 迁移和 writer 兼容 |
+| `scripts/` | 部署与启动脚本 | `setup_nas.sh` 创建根 `.venv`；`start_dashboard.sh` 启动 Uvicorn；`start_cookie_helper.sh` 在本机启动 Chrome Cookie 助手 |
+| `tests/` | 回归测试 | 覆盖后台配置、Cookie 助手、列表排序、媒体同步、SQLite 迁移和 writer 兼容 |
 | `data/` | 默认数据库目录 | 只提交 `.gitkeep`；真实 `*.db` 不提交 |
 | `logs/` | 运行日志目录 | 只提交 `.gitkeep`；真实日志不提交 |
 | `Dockerfile` | 容器部署 | 只安装依赖；运行时挂载项目目录到 `/app` |
@@ -84,7 +84,14 @@
   - 入口：`POST /api/backup/refresh-cookie` -> `dashboard.server.refresh_cookie`
   - 核心逻辑：`inspect_cookie_health()`、`get_chrome_cookie_string()`、`iter_backup_cookie_candidates()`、`persist_cookie_update()`
   - 副作用：自动刷新成功时会先备份当前 `weiboSpider/config.json` 到 `.before-auto-cookie-*`，再原子写入新 cookie
-  - 注意：不会通过 API 返回 cookie 明文；自动刷新优先尝试运行环境的 Chrome cookie，失败时回退扫描历史配置备份
+  - 注意：不会通过 NAS 后台 API 返回 cookie 明文；自动刷新优先尝试运行环境的 Chrome cookie，失败时回退扫描历史配置备份
+  - 注意：NAS/Docker 通常没有桌面 Chrome/DBus 密钥环，页面会在后端自动刷新失败后尝试调用本机 `http://127.0.0.1:8766` Cookie 助手，再通过 `/api/backup-config` 写回 NAS 配置
+
+- **启动本机 Cookie 助手**
+  - 入口：`scripts/start_cookie_helper.sh` -> `scripts/cookie_helper.py`
+  - 核心逻辑：用 `browser_cookie3` 从本机 Chrome 读取 `weibo.cn` / `weibo.com` Cookie，调用微博资料页验证有效性，通过 loopback JSON API 返回给已打开的设置页
+  - 副作用：默认监听 `127.0.0.1:8766`；可用 `WEIBO_COOKIE_HELPER_HOST`、`WEIBO_COOKIE_HELPER_PORT`、`WEIBO_COOKIE_HELPER_ALLOWED_ORIGINS`、`WEIBO_COOKIE_HELPER_USER_ID` 调整
+  - 注意：只应在用户本机运行，不应在 NAS 容器里长期暴露；默认只允许 `https://weibo.jinshanweb.com:8765` 和本地调试地址跨域访问，日志不得打印 cookie
 
 - **启动/暂停/继续/停止备份**
   - 入口：`POST /api/backup/start|pause|resume|stop`
@@ -111,6 +118,7 @@
 - 后台必须默认保护除首页和 auth setup/login/status 外的 API、媒体文件和备份控制接口。
 - 后台登录 cookie 必须使用 HttpOnly；公网 HTTPS/反向代理部署建议设置 `WEIBO_DASHBOARD_COOKIE_SECURE=1`。
 - 后台和前端只能展示 cookie 是否已配置与可用性状态；配置保存和自动刷新接口可写入新 cookie，但不得通过读取 API 返回真实 cookie 内容。
+- 本机 Cookie 助手是例外的 loopback 桥接：只绑定 `127.0.0.1`，只给设置页返回内存中的有效 cookie，并由设置页立即写回 NAS；不得扩大为公网接口。
 - 公开仓库使用 `weiboSpider/config.example.json` 作为配置模板。
 - 默认 SQLite 路径是 `../data/weibo.db`，该路径相对 `weiboSpider/` 目录解析。
 - 当前备份配置 `write_mode` 应包含 `sqlite`，否则网页无法读取新微博。
@@ -124,9 +132,9 @@
 ## 常用验证命令
 
 ```bash
-python3 -m unittest tests/test_sqlite_store.py tests/test_backup_paths.py tests/test_dashboard.py tests/test_sqlite_writer.py tests/test_page_parser_time.py
-python3 -m py_compile sqlite_store.py sync_sqlite_from_json.py backup_paths.py dashboard/server.py
-bash -n scripts/setup_nas.sh scripts/start_dashboard.sh
+python3 -m unittest tests/test_sqlite_store.py tests/test_backup_paths.py tests/test_dashboard.py tests/test_cookie_helper.py tests/test_sqlite_writer.py tests/test_page_parser_time.py
+python3 -m py_compile sqlite_store.py sync_sqlite_from_json.py backup_paths.py dashboard/server.py scripts/cookie_helper.py
+bash -n scripts/setup_nas.sh scripts/start_dashboard.sh scripts/start_cookie_helper.sh
 ```
 
 后台接口烟测：

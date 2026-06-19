@@ -1029,6 +1029,7 @@ body {
 
 <script>
 const API = '';
+const LOCAL_COOKIE_HELPER_URL = 'http://127.0.0.1:8766/api/cookie';
 let currentDate = new Date();
 let selectedDate = null;
 let currentPage = 1;
@@ -1746,22 +1747,74 @@ async function saveBackupConfig(options = {}) {
   }
 }
 
+function firstBackupUserId() {
+  return document.getElementById('configUserIds').value
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean)[0] || '1639733600';
+}
+
+function formatAutoCookieError(message) {
+  const text = message || '自动获取失败';
+  return text.startsWith('自动获取失败') ? text : `自动获取失败：${text}`;
+}
+
+async function fetchLocalCookieFromHelper() {
+  const url = `${LOCAL_COOKIE_HELPER_URL}?user_id=${encodeURIComponent(firstBackupUserId())}`;
+  let response;
+  try {
+    response = await fetch(url, { method: 'GET' });
+  } catch (err) {
+    throw new Error(`无法连接本机 Cookie 助手，请先在本机运行 scripts/start_cookie_helper.sh 后重试（${err.message}）`);
+  }
+  return await parseJSONResponse(response);
+}
+
+async function saveCookieFromLocalHelper(cookie) {
+  const payload = collectBackupConfig();
+  payload.cookie = cookie;
+  return await postJSON('/api/backup-config', payload);
+}
+
+function updateCookieFieldsFromResult(result) {
+  if (!result.cookie_status) return;
+  document.getElementById('configCookieHealth').value = cookieHealthText(result.cookie_status, result.cookie_configured);
+  document.getElementById('configCookieStatus').value = result.cookie_configured ? '已配置' : '未配置或仍是示例值';
+}
+
 async function refreshCookieAutomatically() {
   showBackupFeedback('自动获取 Cookie 中...');
+  let serverError = null;
   try {
     const result = await postJSON('/api/backup/refresh-cookie');
     if (!result.ok) {
-      showBackupFeedback(result.message || '自动获取失败', 'error');
-      return;
+      throw new Error(result.message || '自动获取失败');
     }
-    if (result.cookie_status) {
-      document.getElementById('configCookieHealth').value = cookieHealthText(result.cookie_status, result.cookie_configured);
-      document.getElementById('configCookieStatus').value = result.cookie_configured ? '已配置' : '未配置或仍是示例值';
-    }
+    updateCookieFieldsFromResult(result);
     showBackupFeedback(result.message || 'Cookie 已自动更新', 'success');
     await loadBackupConfig();
+    return;
   } catch (err) {
-    showBackupFeedback(`自动获取失败：${err.message}`, 'error');
+    serverError = err;
+  }
+
+  showBackupFeedback('NAS 无法直接读取本机 Chrome，正在询问本机 Cookie 助手...');
+  try {
+    const helperResult = await fetchLocalCookieFromHelper();
+    if (!helperResult.ok || !helperResult.cookie) {
+      throw new Error(helperResult.message || '本机助手没有返回有效 Cookie');
+    }
+    const savedResult = await saveCookieFromLocalHelper(helperResult.cookie);
+    if (!savedResult.ok) {
+      throw new Error(savedResult.message || '写入 NAS 配置失败');
+    }
+    updateCookieFieldsFromResult(savedResult);
+    document.getElementById('configCookieInput').value = '';
+    showBackupFeedback('已从本机 Chrome 自动更新 Cookie', 'success');
+    await loadBackupConfig();
+  } catch (helperErr) {
+    const serverMessage = serverError?.message ? `；NAS 返回：${serverError.message}` : '';
+    showBackupFeedback(formatAutoCookieError(`${helperErr.message}${serverMessage}`), 'error');
   }
 }
 
