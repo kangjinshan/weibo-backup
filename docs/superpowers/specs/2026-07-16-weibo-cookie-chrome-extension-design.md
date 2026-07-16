@@ -21,7 +21,7 @@
 - 插件不保存后台密码，也不直接调用后台 API。
 - 插件不支持用户配置其他后台地址。
 - 插件不替换或删除现有本机 Python Cookie 助手；后者继续作为兼容备用方案。
-- 插件不把 Cookie 写入剪贴板、扩展存储、浏览器日志或错误信息。
+- 插件不把 Cookie 写入剪贴板、扩展存储、浏览器日志、弹窗状态或错误信息；唯一允许的显示目的地是目标页面的 `#configCookieInput`。
 
 ## 用户流程
 
@@ -36,10 +36,11 @@
 
 插件放在独立目录 `chrome-extension/`，与 FastAPI 后台和本机 Python 助手解耦。建议包含：
 
-- `manifest.json`：Manifest V3 清单和最小权限声明。
+- `manifest.json`：Chrome 92+ 的 Manifest V3 清单和最小权限声明。
 - `popup.html`：插件弹窗结构。
 - `popup.css`：弹窗样式。
-- `popup.js`：协调 Cookie 读取、页面校验、注入和状态提示。
+- `popup.js`：仅负责弹窗 UI、状态提示和用户操作。
+- `popup-coordinator.js`：无 DOM 依赖的 Chrome API 协调、页面校验、注入和安全错误分类。
 - `cookie-utils.js`：无 Chrome API 依赖的 Cookie 过滤、合并和序列化函数，便于单元测试。
 - `tests/cookie-utils.test.js`：使用 Node 内置测试运行器验证纯函数行为。
 
@@ -59,7 +60,7 @@
 - `https://*.weibo.com/*`
 - `https://weibo.jinshanweb.com:8765/*`
 
-插件在执行注入前还必须显式校验当前标签页 origin 等于 `https://weibo.jinshanweb.com:8765`。即使权限清单发生误配，也不能向其他页面填入 Cookie。
+插件在读取 Cookie 或执行注入前必须显式校验当前标签页 origin 等于 `https://weibo.jinshanweb.com:8765`。注入函数也必须在任何 DOM 查询或写入前再次校验页面 `location.origin`；即使标签页在两步之间导航或权限清单发生误配，也不能向其他页面填入 Cookie。
 
 ## Cookie 处理规则
 
@@ -67,16 +68,16 @@
 
 1. 忽略 `expirationDate` 已早于当前时间的 Cookie；会话 Cookie 没有 `expirationDate`，予以保留。
 2. 忽略名称为空的异常 Cookie。
-3. 按 Cookie 名称去重。
-4. 同名 Cookie 优先采用 `weibo.cn` 的值，因为备份爬虫主要请求 `weibo.cn`。
+3. 在每个域内按 Chrome 返回顺序保留第一个可用的同名 Cookie。
+4. 将 `weibo.cn` 的去重结果覆盖到 `weibo.com` 的去重结果；同名 Cookie 优先采用 `weibo.cn` 的值，因为备份爬虫主要请求 `weibo.cn`。
 5. 对名称排序后序列化为 `name=value; name2=value2`，使结果稳定且便于测试。
 6. 如果最终没有 Cookie，停止操作并提示用户先登录微博。
 
-插件不在弹窗中显示 Cookie 字符串，也不把字符串传给非目标页面。
+插件不在弹窗、状态、日志或错误中显示 Cookie 字符串，也不把字符串传给非目标页面；唯一允许的显示目的地是目标页面的 `#configCookieInput`。
 
 ## 页面填充
 
-插件确认当前标签页地址后，通过 `chrome.scripting.executeScript` 在页面中执行一个小型填充函数。该函数：
+插件确认当前标签页地址后，通过 `chrome.scripting.executeScript` 在页面中执行一个小型填充函数。该函数在任何 DOM 查询或写入前再次确认 `location.origin`，并且：
 
 - 查找 `#configCookieInput`。
 - 找不到时返回结构化失败结果，提示用户先打开“备份设置”。
@@ -104,7 +105,7 @@
 
 - 不使用 `chrome.storage`、`localStorage`、IndexedDB 或剪贴板保存 Cookie。
 - 不调用 `console.log` 输出 Cookie 或包含 Cookie 的对象。
-- 不把 Cookie 放入 URL、查询参数或页面 DOM 属性；唯一允许的 DOM 位置是现有更新输入框的 `value`。
+- 不把 Cookie 放入 URL、查询参数或页面 DOM 属性；唯一允许的显示目的地是现有更新输入框的 `value`，弹窗、状态、日志和错误也不得显示 Cookie 内容。
 - 不保存后台密码或后台登录会话。
 - 不自动提交配置，最终写入仍由用户在受登录会话保护的后台页面中确认。
 - README 和 AGENTS.md 只描述使用方式和权限，不包含真实 Cookie 示例。
@@ -113,8 +114,8 @@
 
 自动验证：
 
-- 使用 Node 内置测试运行器验证过期过滤、会话 Cookie 保留、同名项的 `weibo.cn` 优先级、稳定排序和空结果。
-- 使用 Python 回归测试解析 `manifest.json`，确认 Manifest V3、权限和主机范围没有扩大。
+- 使用 Node 内置测试运行器验证过期过滤、会话 Cookie 保留、每域第一个同名项、`weibo.cn` 覆盖、稳定排序、空结果、页面内 origin 防护和 Chrome API 协调错误分类。
+- 使用 Python 回归测试解析 `manifest.json`，确认 Chrome 92+、Manifest V3、权限和主机范围没有扩大。
 - 检查插件源码不使用扩展存储或剪贴板 API。
 - 继续运行仓库现有 Python、编译和 shell 语法验证命令。
 

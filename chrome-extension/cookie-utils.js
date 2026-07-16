@@ -13,7 +13,7 @@ function isUsableCookie(cookie, nowSeconds) {
 
 function mergeCookies(target, cookies, nowSeconds) {
   for (const cookie of cookies) {
-    if (isUsableCookie(cookie, nowSeconds)) {
+    if (isUsableCookie(cookie, nowSeconds) && !target.has(cookie.name)) {
       target.set(cookie.name, cookie.value);
     }
   }
@@ -24,9 +24,11 @@ export function buildCookieHeader(
   weiboComCookies,
   nowSeconds = Date.now() / 1_000,
 ) {
-  const valuesByName = new Map();
-  mergeCookies(valuesByName, weiboComCookies, nowSeconds);
-  mergeCookies(valuesByName, weiboCnCookies, nowSeconds);
+  const weiboComValues = new Map();
+  const weiboCnValues = new Map();
+  mergeCookies(weiboComValues, weiboComCookies, nowSeconds);
+  mergeCookies(weiboCnValues, weiboCnCookies, nowSeconds);
+  const valuesByName = new Map([...weiboComValues, ...weiboCnValues]);
 
   return [...valuesByName.entries()]
     .sort(([leftName], [rightName]) =>

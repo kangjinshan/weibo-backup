@@ -69,14 +69,14 @@ bash scripts/setup_nas.sh
 
 ### 使用 Chrome 插件填入 Cookie
 
-1. 在 Chrome 中登录 `weibo.cn` 或 `weibo.com`。
+1. 使用 Chrome 92 或更高版本，并在其中登录 `weibo.cn` 或 `weibo.com`。
 2. 打开 `chrome://extensions/`，启用“开发者模式”。
 3. 点击“加载已解压的扩展程序”，选择本仓库的 `chrome-extension/` 目录。
 4. 打开并登录 `https://weibo.jinshanweb.com:8765`，进入“备份设置”。
 5. 点击“微博备份 Cookie 填充器”图标，再点击“获取并填入”。
 6. 页面字段填入后，在后台手动点击“保存设置”。
 
-插件权限只覆盖 `weibo.cn`、`weibo.com` 和固定后台 `https://weibo.jinshanweb.com:8765`。插件不会保存、显示、复制或自动提交 Cookie，也不保存后台密码。修改插件源码后，需要在 `chrome://extensions/` 中点击该插件的“重新加载”。
+插件权限只覆盖 `weibo.cn`、`weibo.com` 和固定后台 `https://weibo.jinshanweb.com:8765`。真实 Cookie 只会写入该页面已打开的 `#configCookieInput`；插件弹窗、状态文字、日志和错误提示均不会显示 Cookie 内容。插件不会保存、复制或自动提交 Cookie，也不保存后台密码。修改插件源码后，需要在 `chrome://extensions/` 中点击该插件的“重新加载”。
 
 ### 本机 Cookie 助手备用方案
 

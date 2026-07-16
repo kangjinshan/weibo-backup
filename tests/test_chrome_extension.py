@@ -14,6 +14,7 @@ class ChromeExtensionTests(unittest.TestCase):
         )
 
         self.assertEqual(manifest["manifest_version"], 3)
+        self.assertEqual(manifest["minimum_chrome_version"], "92")
         self.assertEqual(
             set(manifest["permissions"]),
             {"activeTab", "cookies", "scripting"},

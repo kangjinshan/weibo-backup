@@ -4,7 +4,7 @@
 
 **Goal:** Build a Chrome Manifest V3 extension that reads the user's current Weibo cookies and fills the existing Cookie field on the fixed Weibo backup dashboard without saving automatically.
 
-**Architecture:** A small popup coordinates two isolated units: a pure Cookie normalizer and a page-injection function. The popup uses `chrome.cookies` only after a user click, validates the exact dashboard origin, and injects the Cookie string into the already-open settings modal through `chrome.scripting`; the FastAPI backend remains unchanged.
+**Architecture:** A UI-only popup delegates Chrome API coordination to a focused module, alongside a pure Cookie normalizer and page-injection function. The coordinator uses `chrome.cookies` only after a user click and exact-origin validation; the injected function repeats the origin check immediately before DOM access, then fills the already-open settings modal through `chrome.scripting`; the FastAPI backend remains unchanged.
 
 **Tech Stack:** Chrome Extensions Manifest V3, browser JavaScript ES modules, Node built-in test runner, Python `unittest`, existing static FastAPI dashboard.
 
@@ -13,7 +13,8 @@
 - The only supported dashboard origin is exactly `https://weibo.jinshanweb.com:8765`.
 - Host permissions are limited to `https://*.weibo.cn/*`, `https://*.weibo.com/*`, and `https://weibo.jinshanweb.com:8765/*`.
 - The extension must not store, log, display, copy, or place Cookie data in a URL.
-- The only permitted DOM destination for the Cookie string is the existing `#configCookieInput` value.
+- The only permitted display destination for the Cookie string is the existing `#configCookieInput` value; popup text, status text, logs, and errors must never display it.
+- Chrome 92 or later is required by the manifest contract.
 - The extension must not call `/api/backup-config`, click “保存设置”, or otherwise submit the configuration.
 - The user must already be logged into Weibo and must open the dashboard's “备份设置” modal before filling.
 - The existing Python Cookie helper remains available as a fallback and is not removed.
@@ -28,6 +29,7 @@
 - `chrome-extension/package.json`: ES-module declaration and dependency-free Node test command.
 - `chrome-extension/cookie-utils.js`: Pure filtering, merge-precedence, and serialization logic.
 - `chrome-extension/page-fill.js`: Standalone function executed inside the dashboard tab.
+- `chrome-extension/popup-coordinator.js`: DOM-free Chrome API coordinator with safe error codes.
 - `chrome-extension/popup.html`: Accessible popup markup.
 - `chrome-extension/popup.css`: Compact popup presentation and status states.
 - `chrome-extension/popup.js`: Chrome API coordination, exact-origin validation, and safe user-facing errors.

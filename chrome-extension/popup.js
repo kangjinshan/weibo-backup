@@ -1,7 +1,6 @@
-import { buildCookieHeader } from "./cookie-utils.js";
 import { fillCookieInput } from "./page-fill.js";
+import { OperationError, coordinateCookieFill } from "./popup-coordinator.js";
 
-const DASHBOARD_ORIGIN = "https://weibo.jinshanweb.com:8765";
 const button = document.querySelector("#fillCookieButton");
 const status = document.querySelector("#status");
 
@@ -14,13 +13,6 @@ const ERROR_MESSAGES = {
   generic: "操作失败，请重新登录微博、刷新后台后重试。",
 };
 
-class OperationError extends Error {
-  constructor(code) {
-    super(code);
-    this.code = code;
-  }
-}
-
 function showStatus(message, type = "") {
   status.textContent = message;
   status.className = type ? `status ${type}` : "status";
@@ -31,73 +23,11 @@ function setBusy(busy) {
   button.textContent = busy ? "正在获取…" : "获取并填入";
 }
 
-function isTargetDashboard(tab) {
-  if (!Number.isInteger(tab?.id) || typeof tab.url !== "string") {
-    return false;
-  }
-  try {
-    return new URL(tab.url).origin === DASHBOARD_ORIGIN;
-  } catch {
-    return false;
-  }
-}
-
-async function getActiveTab() {
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    return tab;
-  } catch {
-    throw new OperationError("permission");
-  }
-}
-
-async function getDomainCookies(domain) {
-  try {
-    return await chrome.cookies.getAll({ domain });
-  } catch {
-    throw new OperationError("permission");
-  }
-}
-
-async function fillActiveDashboard(tabId, cookieHeader) {
-  let injectionResults;
-  try {
-    injectionResults = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: fillCookieInput,
-      args: [cookieHeader],
-    });
-  } catch {
-    throw new OperationError("injection");
-  }
-
-  const result = injectionResults?.[0]?.result;
-  if (!result?.ok) {
-    throw new OperationError(
-      result?.reason === "settings_closed" ? "settings_closed" : "injection",
-    );
-  }
-}
-
 async function handleFill() {
   setBusy(true);
   showStatus("正在读取微博 Cookie…");
   try {
-    const tab = await getActiveTab();
-    if (!isTargetDashboard(tab)) {
-      throw new OperationError("wrong_page");
-    }
-
-    const [weiboCnCookies, weiboComCookies] = await Promise.all([
-      getDomainCookies("weibo.cn"),
-      getDomainCookies("weibo.com"),
-    ]);
-    const cookieHeader = buildCookieHeader(weiboCnCookies, weiboComCookies);
-    if (!cookieHeader) {
-      throw new OperationError("no_cookies");
-    }
-
-    await fillActiveDashboard(tab.id, cookieHeader);
+    await coordinateCookieFill(chrome, fillCookieInput);
     showStatus("已填入，请检查并在后台手动保存。", "success");
   } catch (error) {
     const code = error instanceof OperationError ? error.code : "generic";

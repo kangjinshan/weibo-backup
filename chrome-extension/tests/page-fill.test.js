@@ -3,8 +3,13 @@ import test from "node:test";
 
 import { fillCookieInput } from "../page-fill.js";
 
-function installFakeDom({ modalOpen = true, fieldPresent = true } = {}) {
+function installFakeDom({
+  modalOpen = true,
+  fieldPresent = true,
+  origin = "https://weibo.jinshanweb.com:8765",
+} = {}) {
   const events = [];
+  let queryCount = 0;
   const field = fieldPresent
     ? {
         value: "",
@@ -24,6 +29,7 @@ function installFakeDom({ modalOpen = true, fieldPresent = true } = {}) {
 
   globalThis.document = {
     querySelector(selector) {
+      queryCount += 1;
       if (selector === "#backupModal") return modal;
       if (selector === "#configCookieInput") return field;
       return null;
@@ -35,13 +41,21 @@ function installFakeDom({ modalOpen = true, fieldPresent = true } = {}) {
       this.bubbles = Boolean(options.bubbles);
     }
   };
+  globalThis.location = { origin };
 
-  return { field, events };
+  return {
+    field,
+    events,
+    get queryCount() {
+      return queryCount;
+    },
+  };
 }
 
 test.afterEach(() => {
   delete globalThis.document;
   delete globalThis.Event;
+  delete globalThis.location;
 });
 
 test("fills the Cookie field and emits input and change events", () => {
@@ -73,4 +87,17 @@ test("refuses to fill when the Cookie field is missing", () => {
   const result = fillCookieInput("SUB=secret");
 
   assert.deepEqual(result, { ok: false, reason: "settings_closed" });
+});
+
+test("does not inspect or fill a navigated non-dashboard page", () => {
+  const fakeDom = installFakeDom({
+    origin: "https://example.com",
+  });
+
+  const result = fillCookieInput("SUB=secret");
+
+  assert.deepEqual(result, { ok: false, reason: "wrong_page" });
+  assert.equal(fakeDom.queryCount, 0);
+  assert.equal(fakeDom.field.value, "");
+  assert.deepEqual(fakeDom.events, []);
 });

@@ -29,6 +29,23 @@ test("prefers weibo.cn when both domains contain the same cookie name", () => {
   assert.equal(header, "SUB=cn-value");
 });
 
+test("keeps each domain's first usable same-name Cookie before cn overlays com", () => {
+  const header = buildCookieHeader(
+    [
+      { name: "SUB", value: "cn-first", path: "/" },
+      { name: "SUB", value: "cn-later", path: "/account" },
+    ],
+    [
+      { name: "SUB", value: "com-first", path: "/" },
+      { name: "SUB", value: "com-later", path: "/account" },
+      { name: "COM_ONLY", value: "com-value" },
+    ],
+    NOW,
+  );
+
+  assert.equal(header, "COM_ONLY=com-value; SUB=cn-first");
+});
+
 test("includes unique cookies from both Weibo domains", () => {
   const header = buildCookieHeader(
     [{ name: "CN_ONLY", value: "cn" }],

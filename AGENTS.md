@@ -26,7 +26,7 @@
 | --- | --- | --- |
 | `dashboard/` | 监控后台与 API | `server.py` 暴露统计、微博列表、媒体文件、备份配置和进程控制接口 |
 | `dashboard/static/` | 单页监控界面 | `index.html` 内含首次设置/登录门、日历、微博列表筛选、备份弹层、图片灯箱和自动刷新逻辑 |
-| `chrome-extension/` | Chrome Cookie 填充插件 | Manifest V3 插件只读取微博域 Cookie，并填入固定后台已打开的 `#configCookieInput`；不保存、不显示、不自动提交 Cookie |
+| `chrome-extension/` | Chrome Cookie 填充插件 | Chrome 92+ 的 Manifest V3 插件只读取微博域 Cookie，并填入固定后台已打开的 `#configCookieInput`；不保存、不显示、不自动提交 Cookie |
 | `weiboSpider/` | 微博爬虫主体 | 包含上游爬虫源码、示例配置和写入逻辑；`config.json` 为本地私密文件，不提交 |
 | `weiboSpider/weibo_spider/` | 抓取、解析、下载、写入核心包 | `spider.py` 调度解析器、下载器和 writers；微博相对时间按东八区解析 |
 | `scripts/` | 部署与启动脚本 | `setup_nas.sh` 创建根 `.venv`；`start_dashboard.sh` 启动 Uvicorn；`start_cookie_helper.sh` 在本机启动 Chrome Cookie 助手 |
@@ -90,9 +90,9 @@
 
 - **用 Chrome 插件填入微博 Cookie**
   - 入口：`chrome-extension/manifest.json` -> `popup.html` -> `popup.js`
-  - 核心逻辑：`buildCookieHeader()` 过滤并合并 `weibo.cn` / `weibo.com` Cookie；`fillCookieInput()` 只向固定后台已打开的 `#configCookieInput` 填值
+  - 核心逻辑：`popup-coordinator.js` 先验证固定 origin 再读取 Cookie；`buildCookieHeader()` 保留每个域内第一个可用同名项并以 `weibo.cn` 覆盖 `weibo.com`；`fillCookieInput()` 在页面内再次验证 origin 后只向 `#configCookieInput` 填值
   - 副作用：只更新当前页面内存中的输入框值；不会自动调用后台保存接口，用户必须手动保存
-  - 注意：插件权限只允许微博域和 `https://weibo.jinshanweb.com:8765`；不得存储、打印、显示、复制 Cookie，也不得保存后台密码
+  - 注意：要求 Chrome 92+；Cookie 唯一允许的显示目的地是该输入框，弹窗、状态、日志和错误不得显示 Cookie 内容；不得存储、打印、复制 Cookie，也不得保存后台密码
 
 - **启动本机 Cookie 助手**
   - 入口：`scripts/start_cookie_helper.sh` -> `scripts/cookie_helper.py`
@@ -125,7 +125,7 @@
 - 后台必须默认保护除首页和 auth setup/login/status 外的 API、媒体文件和备份控制接口。
 - 后台登录 cookie 必须使用 HttpOnly；公网 HTTPS/反向代理部署建议设置 `WEIBO_DASHBOARD_COOKIE_SECURE=1`。
 - 后台和前端只能展示 cookie 是否已配置与可用性状态；配置保存和自动刷新接口可写入新 cookie，但不得通过读取 API 返回真实 cookie 内容。
-- Chrome 插件只允许读取 `weibo.cn` / `weibo.com` Cookie，并向 `https://weibo.jinshanweb.com:8765` 已打开的更新字段填值；不得使用扩展存储、剪贴板、日志或 URL 保存/传递 Cookie，不得自动提交配置。
+- Chrome 插件只允许读取 `weibo.cn` / `weibo.com` Cookie，并向 `https://weibo.jinshanweb.com:8765` 已打开的更新字段填值；Cookie 唯一允许的显示目的地是 `#configCookieInput`，弹窗、状态、日志和错误不得显示其内容；不得使用扩展存储、剪贴板、日志或 URL 保存/传递 Cookie，不得自动提交配置。
 - 本机 Cookie 助手是例外的 loopback 桥接：只绑定 `127.0.0.1`，只给设置页返回内存中的有效 cookie，并由设置页立即写回 NAS；不得扩大为公网接口。
 - 公开仓库使用 `weiboSpider/config.example.json` 作为配置模板。
 - 默认 SQLite 路径是 `../data/weibo.db`，该路径相对 `weiboSpider/` 目录解析。
