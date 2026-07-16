@@ -11,6 +11,7 @@ weiboSpider/venv/
 .idea/
 .vscode/
 .worktrees/
+.superpowers/
 
 # Runtime logs and process files
 logs/*
