@@ -139,6 +139,8 @@
 
 ## 常用验证命令
 
+运行以下命令前，请先在当前机器执行 `bash scripts/setup_nas.sh`，再运行 `source .venv/bin/activate` 激活脚本创建的、与当前架构兼容的根 `.venv`。不支持复制其他机器的虚拟环境后直接运行 `python3`。
+
 ```bash
 node --test chrome-extension/tests/*.test.js
 python3 -m unittest tests/test_chrome_extension.py tests/test_sqlite_store.py tests/test_backup_paths.py tests/test_dashboard.py tests/test_cookie_helper.py tests/test_sqlite_writer.py tests/test_page_parser_time.py
