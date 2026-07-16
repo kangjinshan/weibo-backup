@@ -9,6 +9,7 @@
 - 首次访问监控后台时设置访问密码，之后必须登录才能访问 API、媒体文件和备份控制。
 - 在网页弹层里配置账号、日期范围、是否下载图片/视频。
 - 在启动备份前检查账号 ID 和 cookie 是否仍是示例值；页面可粘贴更新 cookie，不回显真实 cookie。
+- 提供 Manifest V3 Chrome 插件，从当前浏览器读取微博 Cookie 并填入固定公网后台；插件不会显示、保存或自动提交 Cookie。
 - 备份设置页支持 cookie 可用性检测（有效/疑似过期/未知）与“一键自动获取新 Cookie”；NAS/Docker 读不到本机 Chrome 时，可通过本机 `127.0.0.1` Cookie 助手自动写回新 cookie。
 - 启动、暂停、继续、停止微博备份进程。
 - 查看备份进度、日期日历、微博列表、本地图片和视频。
@@ -22,6 +23,7 @@
 | 路径 | 说明 |
 | --- | --- |
 | `dashboard/` | FastAPI 监控后台与静态页面 |
+| `chrome-extension/` | Chrome 微博 Cookie 填充插件及其无依赖单元测试 |
 | `weiboSpider/` | 微博爬虫主体，含 `weibo_spider` 包和示例配置 |
 | `scripts/` | 环境初始化、后台启动和本机 Cookie 助手脚本 |
 | `tests/` | 本项目回归测试 |
@@ -63,16 +65,30 @@ bash scripts/setup_nas.sh
 
 保留 `write_mode` 中的 `sqlite`，否则网页无法从 SQLite 读取新微博。
 
-网页不会回显真实 cookie。NAS 上如果启动备份提示 cookie 未配置或仍是示例值，可以在“备份设置”的“更新 Cookie”里粘贴当前浏览器登录微博后的 cookie 并保存，也可以直接编辑 `weiboSpider/config.json`。
-如果“Cookie 可用性”显示疑似过期，可以直接点“自动获取新 Cookie”尝试自动修复。NAS/Docker 容器通常没有桌面 Chrome 和 DBus 密钥环，不能直接读取你电脑上已登录的 Chrome Cookie；这种情况下，先在你正在使用浏览器的电脑上运行：
+网页不会回显真实 cookie。NAS 上如果启动备份提示 cookie 未配置或仍是示例值，可以使用仓库内的 Chrome 插件把当前浏览器的微博 Cookie 填入“备份设置”，再由你手动保存。
+
+### 使用 Chrome 插件填入 Cookie
+
+1. 在 Chrome 中登录 `weibo.cn` 或 `weibo.com`。
+2. 打开 `chrome://extensions/`，启用“开发者模式”。
+3. 点击“加载已解压的扩展程序”，选择本仓库的 `chrome-extension/` 目录。
+4. 打开并登录 `https://weibo.jinshanweb.com:8765`，进入“备份设置”。
+5. 点击“微博备份 Cookie 填充器”图标，再点击“获取并填入”。
+6. 页面字段填入后，在后台手动点击“保存设置”。
+
+插件权限只覆盖 `weibo.cn`、`weibo.com` 和固定后台 `https://weibo.jinshanweb.com:8765`。插件不会保存、显示、复制或自动提交 Cookie，也不保存后台密码。修改插件源码后，需要在 `chrome://extensions/` 中点击该插件的“重新加载”。
+
+### 本机 Cookie 助手备用方案
+
+如果无法安装插件，可以在正在使用 Chrome 的电脑上运行：
 
 ```bash
 bash scripts/start_cookie_helper.sh
 ```
 
-保持该终端窗口打开，再回到 `https://weibo.jinshanweb.com:8765/` 的备份设置页点击“自动获取新 Cookie”。页面会从本机 `http://127.0.0.1:8766` 读取已验证的微博 Cookie，并通过已登录的后台会话写回 NAS 上的 `weiboSpider/config.json`。本机助手只监听 `127.0.0.1`，默认只允许仪表盘域名和本地调试地址调用；它不会把 Cookie 打印到日志。
+保持终端窗口打开，再回到备份设置页点击“自动获取新 Cookie”。页面会从本机 `http://127.0.0.1:8766` 读取已验证的微博 Cookie，并通过已登录的后台会话写回 NAS。助手只监听 `127.0.0.1`，不会把 Cookie 打印到日志。
 
-获取可用 cookie 的常用方式：
+### 手动获取 Cookie
 
 1. 在自己的电脑浏览器登录微博网页。
 2. 打开浏览器开发者工具的 Network/网络面板，刷新微博页面。
@@ -160,9 +176,10 @@ python3 sync_sqlite_from_json.py
 ## 测试
 
 ```bash
-python3 -m unittest tests/test_sqlite_store.py tests/test_backup_paths.py tests/test_dashboard.py tests/test_sqlite_writer.py tests/test_page_parser_time.py
-python3 -m unittest tests/test_cookie_helper.py
+node --test chrome-extension/tests/*.test.js
+python3 -m unittest tests/test_chrome_extension.py tests/test_sqlite_store.py tests/test_backup_paths.py tests/test_dashboard.py tests/test_cookie_helper.py tests/test_sqlite_writer.py tests/test_page_parser_time.py
 python3 -m py_compile sqlite_store.py sync_sqlite_from_json.py backup_paths.py dashboard/server.py scripts/cookie_helper.py
+python3 -m json.tool chrome-extension/manifest.json >/dev/null
 bash -n scripts/setup_nas.sh scripts/start_dashboard.sh scripts/start_cookie_helper.sh
 ```
 
