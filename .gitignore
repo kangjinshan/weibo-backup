@@ -10,6 +10,7 @@ weiboSpider/venv/
 .DS_Store
 .idea/
 .vscode/
+.worktrees/
 
 # Runtime logs and process files
 logs/*
