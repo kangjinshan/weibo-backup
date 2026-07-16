@@ -29,10 +29,10 @@
 - `chrome-extension/package.json`: ES-module declaration and dependency-free Node test command.
 - `chrome-extension/cookie-utils.js`: Pure filtering, merge-precedence, and serialization logic.
 - `chrome-extension/page-fill.js`: Standalone function executed inside the dashboard tab.
-- `chrome-extension/popup-coordinator.js`: DOM-free Chrome API coordinator with safe error codes.
+- `chrome-extension/popup-coordinator.js`: Chrome API coordination and exact-origin validation with safe error codes.
 - `chrome-extension/popup.html`: Accessible popup markup.
 - `chrome-extension/popup.css`: Compact popup presentation and status states.
-- `chrome-extension/popup.js`: Chrome API coordination, exact-origin validation, and safe user-facing errors.
+- `chrome-extension/popup.js`: Popup UI/status handling and safe user-facing errors.
 - `chrome-extension/tests/cookie-utils.test.js`: Cookie normalization unit tests.
 - `chrome-extension/tests/page-fill.test.js`: Page injection unit tests with a minimal fake DOM.
 - `tests/test_chrome_extension.py`: Manifest, popup, and sensitive-API regression checks.

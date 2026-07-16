@@ -100,4 +100,42 @@ test("Cookie and injection API errors expose safe error codes only", async (t) =
         !String(error).includes("raw-secret"),
     );
   });
+
+  await t.test("empty injection result", async () => {
+    const { api } = createChromeApi({ injectionResult: [] });
+
+    await assert.rejects(
+      coordinateCookieFill(api, () => ({ ok: true })),
+      (error) =>
+        error instanceof OperationError &&
+        error.code === "injection" &&
+        error.message === "injection" &&
+        !String(error).includes("Cookie:") &&
+        !String(error).includes("raw-secret"),
+    );
+  });
+
+  await t.test("unexpected injected failure reason", async () => {
+    const { api } = createChromeApi({
+      injectionResult: [
+        {
+          result: {
+            ok: false,
+            reason: "unexpected",
+            value: "Cookie: SUB=raw-secret",
+          },
+        },
+      ],
+    });
+
+    await assert.rejects(
+      coordinateCookieFill(api, () => ({ ok: true })),
+      (error) =>
+        error instanceof OperationError &&
+        error.code === "injection" &&
+        error.message === "injection" &&
+        !String(error).includes("Cookie:") &&
+        !String(error).includes("raw-secret"),
+    );
+  });
 });
