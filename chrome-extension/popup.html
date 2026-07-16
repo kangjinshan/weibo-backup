@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>微博备份 Cookie 填充器</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>微博备份 Cookie</h1>
+    <p class="description">读取当前 Chrome 的微博登录 Cookie，并填入已打开的备份设置。</p>
+    <button id="fillCookieButton" type="button">获取并填入</button>
+    <p id="status" class="status" role="status" aria-live="polite">
+      请先登录微博，并打开备份后台的“备份设置”。
+    </p>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

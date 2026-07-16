@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "微博备份 Cookie 填充器",
+  "version": "1.0.0",
+  "description": "把当前 Chrome 中的微博 Cookie 填入固定的微博备份后台。",
+  "permissions": ["activeTab", "cookies", "scripting"],
+  "host_permissions": [
+    "https://*.weibo.cn/*",
+    "https://*.weibo.com/*",
+    "https://weibo.jinshanweb.com:8765/*"
+  ],
+  "action": {
+    "default_title": "填入微博备份 Cookie",
+    "default_popup": "popup.html"
+  }
+}
