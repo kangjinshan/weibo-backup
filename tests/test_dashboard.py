@@ -405,7 +405,6 @@ class DashboardTests(unittest.TestCase):
             server,
             "launch_backup_process",
             return_value=(result, 200),
-            create=True,
         ) as launch:
             response = asyncio.run(server.start_backup())
 
