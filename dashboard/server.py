@@ -1063,24 +1063,24 @@ async def refresh_cookie():
     )
 
 
-@app.post("/api/backup/start")
-async def start_backup():
+def launch_backup_process():
     status = get_backup_process_status()
     if status["running"]:
-        return JSONResponse({"ok": False, "status": status, "message": "backup already running"})
+        return {"ok": False, "status": status, "message": "backup already running"}, 200
     try:
         config = read_backup_config()
     except Exception as exc:
-        return JSONResponse(
-            {"ok": False, "message": f"启动失败：无法读取 weiboSpider/config.json：{exc}"},
-            status_code=400,
-        )
+        return {
+            "ok": False,
+            "message": f"启动失败：无法读取 weiboSpider/config.json：{exc}",
+        }, 400
     issues = backup_config_issues(config)
     if issues:
-        return JSONResponse(
-            {"ok": False, "message": "启动失败：" + "；".join(issues), "config_issues": issues},
-            status_code=400,
-        )
+        return {
+            "ok": False,
+            "message": "启动失败：" + "；".join(issues),
+            "config_issues": issues,
+        }, 400
     ensure_logs_dir()
     command = spider_command()
     try:
@@ -1093,18 +1093,25 @@ async def start_backup():
                 start_new_session=True,
             )
     except Exception as exc:
-        return JSONResponse(
-            {
-                "ok": False,
-                "message": f"启动失败：{exc}",
-                "command": command,
-                "cwd": str(SPIDER_DIR),
-                "log_path": str(BACKUP_LOG_PATH),
-            },
-            status_code=500,
-        )
+        return {
+            "ok": False,
+            "message": f"启动失败：{exc}",
+            "command": command,
+            "cwd": str(SPIDER_DIR),
+            "log_path": str(BACKUP_LOG_PATH),
+        }, 500
     BACKUP_PID_PATH.write_text(str(process.pid) + "\n", encoding="utf-8")
-    return JSONResponse({"ok": True, "pid": process.pid, "log_path": str(BACKUP_LOG_PATH)})
+    return {
+        "ok": True,
+        "pid": process.pid,
+        "log_path": str(BACKUP_LOG_PATH),
+    }, 200
+
+
+@app.post("/api/backup/start")
+async def start_backup():
+    payload, status_code = launch_backup_process()
+    return JSONResponse(payload, status_code=status_code)
 
 
 def signal_backup_process(pid: int, sig: int):

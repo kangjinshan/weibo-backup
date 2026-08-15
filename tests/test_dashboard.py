@@ -393,6 +393,25 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("cookie", payload["message"])
         self.assertFalse(popen.called)
 
+    def test_start_backup_wraps_shared_process_launcher(self):
+        result = {
+            "ok": False,
+            "status": {"running": True, "status": "running", "pid": 123},
+            "message": "backup already running",
+        }
+
+        with patch.object(
+            server,
+            "launch_backup_process",
+            return_value=(result, 200),
+            create=True,
+        ) as launch:
+            response = asyncio.run(server.start_backup())
+
+        self.assertEqual(json.loads(response.body), result)
+        self.assertEqual(response.status_code, 200)
+        launch.assert_called_once_with()
+
     def test_save_backup_config_returns_cookie_status_without_exposing_value(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
