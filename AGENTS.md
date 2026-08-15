@@ -46,8 +46,14 @@
 
 - **启动监控后台**
   - 入口：`scripts/start_dashboard.sh`
-  - 核心逻辑：启动 `dashboard.server:app`
-  - 副作用：监听 `WEIBO_DASHBOARD_HOST` / `WEIBO_DASHBOARD_PORT`，读取 `WEIBO_BACKUP_DIR`；设置 `WEIBO_DASHBOARD_SSL_CERTFILE` 和 `WEIBO_DASHBOARD_SSL_KEYFILE` 时以 HTTPS 启动；首次访问会引导设置后台访问密码
+  - 核心逻辑：启动 `dashboard.server:app`，由 `dashboard_lifespan()` 管理自动备份定时器
+  - 副作用：监听 `WEIBO_DASHBOARD_HOST` / `WEIBO_DASHBOARD_PORT`，读取 `WEIBO_BACKUP_DIR`；设置 `WEIBO_DASHBOARD_SSL_CERTFILE` 和 `WEIBO_DASHBOARD_SSL_KEYFILE` 时以 HTTPS 启动；首次访问会引导设置后台访问密码；默认立即尝试一次备份并启动 30 分钟定时器
+
+- **每 30 分钟自动备份**
+  - 入口：`dashboard_lifespan()` -> `run_automatic_backup_scheduler()`
+  - 核心逻辑：启动时立即调用 `launch_backup_process()`，之后按 `WEIBO_AUTO_BACKUP_INTERVAL_SECONDS` 间隔重试
+  - 副作用：创建与手动启动相同的爬虫子进程和 `logs/backup.pid`；已有进程运行或暂停时跳过
+  - 注意：默认间隔为 1800 秒，设为 `0` 可关闭；Uvicorn 应保持单 worker；服务关闭只取消定时器，不终止已经启动的爬虫进程
 
 - **首次设置与登录后台**
   - 入口：`GET /api/auth/status`、`POST /api/auth/setup`、`POST /api/auth/login`、`POST /api/auth/logout`
@@ -127,6 +133,8 @@
 - 后台和前端只能展示 cookie 是否已配置与可用性状态；配置保存和自动刷新接口可写入新 cookie，但不得通过读取 API 返回真实 cookie 内容。
 - Chrome 插件只允许读取 `weibo.cn` / `weibo.com` Cookie，并向 `https://weibo.jinshanweb.com:8765` 已打开的更新字段填值；Cookie 唯一允许的显示目的地是 `#configCookieInput`，弹窗、状态、日志和错误不得显示其内容；不得使用扩展存储、剪贴板、日志或 URL 保存/传递 Cookie，不得自动提交配置。
 - 本机 Cookie 助手是例外的 loopback 桥接：只绑定 `127.0.0.1`，只给设置页返回内存中的有效 cookie，并由设置页立即写回 NAS；不得扩大为公网接口。
+- 自动备份必须复用手动备份的配置校验和进程启动逻辑，不得绕过 Cookie 示例值检查，也不得并行启动第二个备份进程。
+- 自动备份日志不得包含 Cookie 明文；单次触发失败不能终止后续调度。
 - 公开仓库使用 `weiboSpider/config.example.json` 作为配置模板。
 - 默认 SQLite 路径是 `../data/weibo.db`，该路径相对 `weiboSpider/` 目录解析。
 - 当前备份配置 `write_mode` 应包含 `sqlite`，否则网页无法读取新微博。

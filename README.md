@@ -12,6 +12,7 @@
 - 提供 Manifest V3 Chrome 插件，从当前浏览器读取微博 Cookie 并填入固定公网后台；插件不会显示、保存或自动提交 Cookie。
 - 备份设置页支持 cookie 可用性检测（有效/疑似过期/未知）与“一键自动获取新 Cookie”；NAS/Docker 读不到本机 Chrome 时，可通过本机 `127.0.0.1` Cookie 助手自动写回新 cookie。
 - 启动、暂停、继续、停止微博备份进程。
+- 监控后台启动后立即尝试一次备份，之后默认每 30 分钟自动重试；已有备份运行或暂停时会跳过，不会创建重复进程。
 - 查看备份进度、日期日历、微博列表、本地图片和视频。
 - 微博列表支持按“全部/仅原创”和“纯文字/文字+图片/文字+图片+视频”筛选。
 - 支持图片点击预览、缩放、点空白关闭。
@@ -150,10 +151,15 @@ WEIBO_DASHBOARD_SSL_CERTFILE=/path/to/fullchain.pem
 WEIBO_DASHBOARD_SSL_KEYFILE=/path/to/privkey.pem
 WEIBO_DASHBOARD_AUTH_PATH=/path/to/weibo-backup/logs/dashboard-auth.json
 WEIBO_DASHBOARD_COOKIE_SECURE=1
+WEIBO_AUTO_BACKUP_INTERVAL_SECONDS=1800
 ```
 
 设置 `WEIBO_DASHBOARD_SSL_CERTFILE` 和 `WEIBO_DASHBOARD_SSL_KEYFILE` 后，后台会直接以 HTTPS 方式监听 `WEIBO_DASHBOARD_PORT`。
 如果通过 HTTPS 或反向代理暴露到公网，建议设置 `WEIBO_DASHBOARD_COOKIE_SECURE=1`，让浏览器只通过 HTTPS 发送登录 cookie。
+
+自动备份默认启用。`WEIBO_AUTO_BACKUP_INTERVAL_SECONDS` 使用秒为单位；设为 `0` 可以关闭。定时备份能减少 Cookie 长时间闲置，但微博仍可能主动使 Cookie 失效，此时需要通过备份设置页更新 Cookie。
+
+自动定时器运行在 Uvicorn 进程内，部署时应保持单 worker；仓库的 `scripts/start_dashboard.sh` 默认就是单 worker。
 
 ## 数据同步
 
