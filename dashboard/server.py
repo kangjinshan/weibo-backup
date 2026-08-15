@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -13,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -32,7 +34,26 @@ from sqlite_store import (
     resolve_db_path,
 )
 
-app = FastAPI(title="微博备份监控")
+
+@asynccontextmanager
+async def dashboard_lifespan(_app):
+    interval_seconds = automatic_backup_interval_seconds()
+    scheduler_task = None
+    if interval_seconds > 0:
+        scheduler_task = asyncio.create_task(
+            run_automatic_backup_scheduler(interval_seconds)
+        )
+    try:
+        yield
+    finally:
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await scheduler_task
+
+
+app = FastAPI(title="微博备份监控", lifespan=dashboard_lifespan)
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_BACKUP_DIR = Path(__file__).resolve().parents[1]
 BACKUP_DIR = Path(os.environ.get("WEIBO_BACKUP_DIR", str(DEFAULT_BACKUP_DIR))).resolve()
@@ -55,6 +76,7 @@ ROOT_VENV_PYTHON = BACKUP_DIR / ".venv" / "bin" / "python"
 COOKIE_CHECK_TIMEOUT = 12
 COOKIE_CHECK_DEFAULT_USER_ID = "1639733600"
 COOKIE_BACKUP_SCAN_LIMIT = 40
+DEFAULT_AUTO_BACKUP_INTERVAL_SECONDS = 30 * 60
 EXCLUDED_DATA_DIRS = {
     "__pycache__",
     "archive",
@@ -1106,6 +1128,38 @@ def launch_backup_process():
         "pid": process.pid,
         "log_path": str(BACKUP_LOG_PATH),
     }, 200
+
+
+def automatic_backup_interval_seconds():
+    raw_value = os.environ.get(
+        "WEIBO_AUTO_BACKUP_INTERVAL_SECONDS",
+        str(DEFAULT_AUTO_BACKUP_INTERVAL_SECONDS),
+    )
+    try:
+        return max(0.0, float(raw_value))
+    except (TypeError, ValueError):
+        LOGGER.warning(
+            "Invalid WEIBO_AUTO_BACKUP_INTERVAL_SECONDS; using %s seconds",
+            DEFAULT_AUTO_BACKUP_INTERVAL_SECONDS,
+        )
+        return float(DEFAULT_AUTO_BACKUP_INTERVAL_SECONDS)
+
+
+async def run_automatic_backup_scheduler(interval_seconds):
+    while True:
+        try:
+            payload, status_code = launch_backup_process()
+            if not payload.get("ok"):
+                LOGGER.warning(
+                    "Automatic backup attempt skipped or failed (%s): %s",
+                    status_code,
+                    payload.get("message", "unknown error"),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("Automatic backup attempt failed unexpectedly")
+        await asyncio.sleep(interval_seconds)
 
 
 @app.post("/api/backup/start")

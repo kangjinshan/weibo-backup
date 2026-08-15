@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import os
 import tempfile
 import sys
 import types
@@ -411,6 +412,120 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(json.loads(response.body), result)
         self.assertEqual(response.status_code, 200)
         launch.assert_called_once_with()
+
+    def test_automatic_backup_interval_defaults_to_thirty_minutes(self):
+        interval_reader = getattr(server, "automatic_backup_interval_seconds", None)
+        self.assertIsNotNone(interval_reader)
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("WEIBO_AUTO_BACKUP_INTERVAL_SECONDS", None)
+            self.assertEqual(interval_reader(), 1800.0)
+
+        with patch.dict(
+            os.environ,
+            {"WEIBO_AUTO_BACKUP_INTERVAL_SECONDS": "0"},
+        ):
+            self.assertEqual(interval_reader(), 0.0)
+
+        with patch.dict(
+            os.environ,
+            {"WEIBO_AUTO_BACKUP_INTERVAL_SECONDS": "invalid"},
+        ):
+            with self.assertLogs(server.LOGGER, level="WARNING") as logs:
+                self.assertEqual(interval_reader(), 1800.0)
+            self.assertIn("using 1800 seconds", logs.output[0])
+
+    def test_automatic_backup_runs_immediately_then_waits(self):
+        scheduler = getattr(server, "run_automatic_backup_scheduler", None)
+        self.assertIsNotNone(scheduler)
+        calls = []
+        sleeps = []
+
+        def launch():
+            calls.append("run")
+            return {"ok": True}, 200
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+            raise asyncio.CancelledError
+
+        async def scenario():
+            with (
+                patch.object(server, "launch_backup_process", side_effect=launch),
+                patch.object(server.asyncio, "sleep", side_effect=fake_sleep),
+            ):
+                with self.assertRaises(asyncio.CancelledError):
+                    await scheduler(1800)
+
+        asyncio.run(scenario())
+        self.assertEqual(calls, ["run"])
+        self.assertEqual(sleeps, [1800])
+
+    def test_automatic_backup_recovers_after_one_attempt_raises(self):
+        scheduler = getattr(server, "run_automatic_backup_scheduler", None)
+        self.assertIsNotNone(scheduler)
+        attempts = []
+        sleeps = []
+
+        def launch():
+            attempts.append(len(attempts) + 1)
+            if len(attempts) == 1:
+                raise RuntimeError("temporary failure")
+            return {"ok": True}, 200
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+            if len(sleeps) >= 2:
+                raise asyncio.CancelledError
+
+        async def scenario():
+            with (
+                patch.object(server, "launch_backup_process", side_effect=launch),
+                patch.object(server.asyncio, "sleep", side_effect=fake_sleep),
+            ):
+                with self.assertRaises(asyncio.CancelledError):
+                    await scheduler(1800)
+
+        with self.assertLogs(server.LOGGER, level="ERROR") as logs:
+            asyncio.run(scenario())
+        self.assertEqual(attempts, [1, 2])
+        self.assertEqual(sleeps, [1800, 1800])
+        self.assertIn("failed unexpectedly", logs.output[0])
+
+    def test_dashboard_lifespan_starts_and_cancels_scheduler(self):
+        lifespan = getattr(server, "dashboard_lifespan", None)
+        self.assertIsNotNone(lifespan)
+        received_intervals = []
+        state = {"cancelled": False}
+
+        async def scheduler(interval):
+            received_intervals.append(interval)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                state["cancelled"] = True
+                raise
+
+        async def scenario():
+            with (
+                patch.object(
+                    server,
+                    "automatic_backup_interval_seconds",
+                    return_value=1800.0,
+                ),
+                patch.object(
+                    server,
+                    "run_automatic_backup_scheduler",
+                    side_effect=scheduler,
+                ),
+            ):
+                async with lifespan(None):
+                    while not received_intervals:
+                        await asyncio.sleep(0)
+
+        asyncio.run(scenario())
+        self.assertEqual(received_intervals, [1800.0])
+        self.assertTrue(state["cancelled"])
 
     def test_save_backup_config_returns_cookie_status_without_exposing_value(self):
         with tempfile.TemporaryDirectory() as tmp:
