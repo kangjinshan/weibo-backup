@@ -1,0 +1,30 @@
+[Unit]
+Description=Weibo browser session broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=weibo-session
+Group=weibo-session
+WorkingDirectory=/opt/weibo-session/current
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/weibo-session/browsers
+Environment=WEIBO_SESSION_PROFILE=/var/lib/weibo-session/profile
+Environment=WEIBO_SESSION_TOKEN_FILE=/var/lib/weibo-session/token
+Environment=WEIBO_SESSION_INTERVAL_SECONDS=1800
+EnvironmentFile=-/etc/weibo-session.env
+ExecStart=/opt/weibo-session/venv/bin/python -m uvicorn azure_session.server:app --host 127.0.0.1 --port 8894 --no-access-log
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=35
+KillMode=control-group
+UMask=0077
+MemoryMax=2G
+CPUQuota=150%
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -9,7 +9,7 @@
 业务边界：
 
 - 负责本地备份、备份状态监控、网页浏览和 NAS 部署。
-- 不负责微博账号登录流程本身；认证依赖用户自行填写 `weiboSpider/config.json` 中的 cookie。
+- 微博身份验证由用户扫码或手工完成；可通过 Azure 独立持久化浏览器维护登录态，NAS 只在独立验证成功后更新 cookie，不自动处理验证码或绕过验证。
 - 不负责云端存储同步；账号目录、`data/*.db`、图片和视频都是本地运行产物，不应提交到 Git。
 
 主要技术栈：
@@ -27,6 +27,8 @@
 | `dashboard/` | 监控后台与 API | `server.py` 暴露统计、微博列表、媒体文件、备份配置和进程控制接口 |
 | `dashboard/static/` | 单页监控界面 | `index.html` 内含首次设置/登录门、日历、微博列表筛选、备份弹层、图片灯箱和自动刷新逻辑 |
 | `chrome-extension/` | Chrome Cookie 填充插件 | Chrome 92+ 的 Manifest V3 插件只读取微博域 Cookie，并填入固定后台已打开的 `#configCookieInput`；不保存、不显示、不自动提交 Cookie |
+| `azure_session/` | Azure 微博会话服务 | 独立 Chromium profile、机器认证 API、systemd 单元和 Nginx HTTPS 路由 |
+| `cookie_broker_client.py` / `cookie_health.py` | Cookie 服务端传输与验证 | HTTPS 客户端禁止重定向；区分登录失效、访问限制和未知故障 |
 | `weiboSpider/` | 微博爬虫主体 | 包含上游爬虫源码、示例配置和写入逻辑；`config.json` 为本地私密文件，不提交 |
 | `weiboSpider/weibo_spider/` | 抓取、解析、下载、写入核心包 | `spider.py` 调度解析器、下载器和 writers；微博相对时间按东八区解析 |
 | `scripts/` | 部署与启动脚本 | `setup_nas.sh` 创建根 `.venv`；`start_dashboard.sh` 启动 Uvicorn；`start_cookie_helper.sh` 在本机启动 Chrome Cookie 助手 |
@@ -79,7 +81,7 @@
 - **访问本地媒体文件**
   - 入口：`GET /media/{media_path:path}` -> `dashboard.server.media`
   - 核心逻辑：`media_url()`、`get_local_picture_urls()`、`get_local_video_url()`
-  - 副作用：只允许返回 `WEIBO_BACKUP_DIR` 目录内的真实文件
+  - 副作用：只允许账号 `img/`、`video/` 下的图片/视频白名单后缀；解析符号链接后验证账号和媒体路径，禁止读取配置、认证文件和其他项目文件
 
 - **保存网页备份配置**
   - 入口：`POST /api/backup-config` -> `dashboard.server.save_backup_config`
@@ -99,6 +101,18 @@
   - 核心逻辑：`popup-coordinator.js` 先验证固定 origin 再读取 Cookie；`buildCookieHeader()` 保留每个域内第一个可用同名项并以 `weibo.cn` 覆盖 `weibo.com`；`fillCookieInput()` 在页面内再次验证 origin 后只向 `#configCookieInput` 填值
   - 副作用：只更新当前页面内存中的输入框值；不会自动调用后台保存接口，用户必须手动保存
   - 注意：要求 Chrome 92+；Cookie 唯一允许的显示目的地是该输入框，弹窗、状态、日志和错误不得显示 Cookie 内容；不得存储、打印、复制 Cookie，也不得保存后台密码
+
+- **由 Azure 维护微博登录态**
+  - 入口：`scripts/setup_azure_session.sh`、`azure_session/server.py`、`/azure-login`
+  - 核心逻辑：独立非 root Chromium 持久化 profile；用户通过受后台登录保护的截图页面扫码；每 30 分钟正常访问并验证会话
+  - Azure 只监听 `127.0.0.1:8894`，由现有 HTTPS 站点代理 `/weibo-session/`；`/v1/*` 需要机器 Bearer 凭证；`/healthz` 无敏感信息
+  - profile 默认 `/var/lib/weibo-session/profile`；机器凭证 `/var/lib/weibo-session/token`；凭证与 profile 均为私有运行数据，不提交、不打印
+  - NAS 私有配置 `logs/azure-cookie-client.json`（或 `WEIBO_COOKIE_BROKER_CONFIG`）包含 HTTPS `url` 与 `token`；只由服务端读取，不返回网页
+  - `launch_backup_process()` 在共享线程锁下执行 Cookie 预检：有效则启动、明确失效则向 Azure 取一次；网络故障/未知状态不当作失效，暂停本轮尝试；新 Cookie 必须通过 NAS 的独立验证才原子写入
+  - 爬虫读取启动时的配置，运行中失效由下一次启动恢复；已有运行/暂停进程不重复启动。僵尸进程视为停止；停止暂停中的进程时发送 TERM 后继续进程以完成退出
+  - Linux 进程状态读取 `/proc/<pid>/stat`，兼容 Alpine/BusyBox 不支持 `ps -p` 的环境；macOS 使用系统 ps
+  - `/api/azure-session`、`/api/azure-session/start|action|frame` 全部需要 NAS 后台登录；网页只接收状态和普通浏览器截图，不接收 Cookie 或机器凭证
+  - 自动/手动启动和 Cookie 网络请求在线程中运行，不能阻塞 Uvicorn 事件循环；保存配置用互斥锁和唯一临时文件，权限 `0600`
 
 - **启动本机 Cookie 助手**
   - 入口：`scripts/start_cookie_helper.sh` -> `scripts/cookie_helper.py`
@@ -131,6 +145,7 @@
 - 后台必须默认保护除首页和 auth setup/login/status 外的 API、媒体文件和备份控制接口。
 - 后台登录 cookie 必须使用 HttpOnly；公网 HTTPS/反向代理部署建议设置 `WEIBO_DASHBOARD_COOKIE_SECURE=1`。
 - 后台和前端只能展示 cookie 是否已配置与可用性状态；配置保存和自动刷新接口可写入新 cookie，但不得通过读取 API 返回真实 cookie 内容。
+- Azure broker 是机器间传输的独立例外：仅认证后的 NAS 可获取 Cookie，HTTPS 禁止跨地址重定向，响应 `no-store`；不得把该接口代理成网页 Cookie 下载接口。跨网络出口验证失败时必须保留 NAS 现有配置。
 - Chrome 插件只允许读取 `weibo.cn` / `weibo.com` Cookie，并向 `https://weibo.jinshanweb.com:8765` 已打开的更新字段填值；Cookie 唯一允许的显示目的地是 `#configCookieInput`，弹窗、状态、日志和错误不得显示其内容；不得使用扩展存储、剪贴板、日志或 URL 保存/传递 Cookie，不得自动提交配置。
 - 本机 Cookie 助手是例外的 loopback 桥接：只绑定 `127.0.0.1`，只给设置页返回内存中的有效 cookie，并由设置页立即写回 NAS；不得扩大为公网接口。
 - 自动备份必须复用手动备份的配置校验和进程启动逻辑，不得绕过 Cookie 示例值检查，也不得并行启动第二个备份进程。
@@ -152,6 +167,8 @@
 ```bash
 node --test chrome-extension/tests/*.test.js
 python3 -m unittest tests/test_chrome_extension.py tests/test_sqlite_store.py tests/test_backup_paths.py tests/test_dashboard.py tests/test_cookie_helper.py tests/test_sqlite_writer.py tests/test_page_parser_time.py
+python3 -m pip install -r requirements-dev.txt
+python3 -m unittest discover -s tests -p 'test_*.py'
 python3 -m py_compile sqlite_store.py sync_sqlite_from_json.py backup_paths.py dashboard/server.py scripts/cookie_helper.py
 python3 -m json.tool chrome-extension/manifest.json >/dev/null
 bash -n scripts/setup_nas.sh scripts/start_dashboard.sh scripts/start_cookie_helper.sh

@@ -45,6 +45,8 @@ data/*
 !AGENTS.md
 !NAS_DEPLOY.md
 !requirements-nas.txt
+!requirements-dev.txt
+!azure_session/requirements.txt
 !dashboard/requirements.txt
 !weiboSpider/README.md
 !weiboSpider/requirements.txt

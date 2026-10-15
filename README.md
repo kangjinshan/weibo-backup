@@ -11,6 +11,7 @@
 - 在启动备份前检查账号 ID 和 cookie 是否仍是示例值；页面可粘贴更新 cookie，不回显真实 cookie。
 - 提供 Manifest V3 Chrome 插件，从当前浏览器读取微博 Cookie 并填入固定公网后台；插件不会显示、保存或自动提交 Cookie。
 - 备份设置页支持 cookie 可用性检测（有效/疑似过期/未知）与“一键自动获取新 Cookie”；NAS/Docker 读不到本机 Chrome 时，可通过本机 `127.0.0.1` Cookie 助手自动写回新 cookie。
+- 支持 Azure 独立的持久化微博浏览器。NAS 检测登录失效后通过 HTTPS 获取 Cookie，必须在 NAS 验证成功才替换配置；扫码入口复用 NAS 后台登录保护。
 - 启动、暂停、继续、停止微博备份进程。
 - 监控后台启动后立即尝试一次备份，之后默认每 30 分钟自动重试；已有备份运行或暂停时会跳过，不会创建重复进程。
 - 查看备份进度、日期日历、微博列表、本地图片和视频。
@@ -25,6 +26,8 @@
 | --- | --- |
 | `dashboard/` | FastAPI 监控后台与静态页面 |
 | `chrome-extension/` | Chrome 微博 Cookie 填充插件及其无依赖单元测试 |
+| `azure_session/` | Azure 浏览器会话服务、依赖、systemd 单元与 Nginx 路由片段 |
+| `cookie_broker_client.py` / `cookie_health.py` | NAS 服务端获取登录态、微博状态分类与验证 |
 | `weiboSpider/` | 微博爬虫主体，含 `weibo_spider` 包和示例配置 |
 | `scripts/` | 环境初始化、后台启动和本机 Cookie 助手脚本 |
 | `tests/` | 本项目回归测试 |
@@ -90,6 +93,8 @@ bash scripts/start_cookie_helper.sh
 保持终端窗口打开，再回到备份设置页点击“自动获取新 Cookie”。页面会从本机 `http://127.0.0.1:8766` 读取已验证的微博 Cookie，并通过已登录的后台会话写回 NAS。助手只监听 `127.0.0.1`，不会把 Cookie 打印到日志。
 
 ### 手动获取 Cookie
+
+也可使用下文的 Azure 持久化登录，免去日常手工粘贴。
 
 1. 在自己的电脑浏览器登录微博网页。
 2. 打开浏览器开发者工具的 Network/网络面板，刷新微博页面。
@@ -160,6 +165,26 @@ WEIBO_AUTO_BACKUP_INTERVAL_SECONDS=1800
 自动备份默认启用。`WEIBO_AUTO_BACKUP_INTERVAL_SECONDS` 使用秒为单位；设为 `0` 可以关闭。定时备份能减少 Cookie 长时间闲置，但微博仍可能主动使 Cookie 失效，此时需要通过备份设置页更新 Cookie。
 
 自动定时器运行在 Uvicorn 进程内，部署时应保持单 worker；仓库的 `scripts/start_dashboard.sh` 默认就是单 worker。
+
+## Azure 持久化微博登录
+
+Azure 服务负责独立微博浏览器及登录态维护，微博内容和媒体继续由 NAS 抓取。登录后台后，在“备份设置”点击“Azure 微博登录”，用手机微博 App 扫描浏览器画面中的二维码并确认登录。必要时可点击画面或输入验证码。完成后点击“登录后同步并启动备份”，NAS 会自行验证跨网络出口的 Cookie。
+
+部署步骤：
+
+1. 把 `azure_session/`、`cookie_health.py` 和 `scripts/setup_azure_session.sh` 复制到 Azure 发布目录。以 root 执行 `bash scripts/setup_azure_session.sh <发布目录>`，安装独立虚拟环境和 Chromium。`/opt/weibo-session/current` 指向发布目录。
+2. 生成高熵机器凭证，保存在 Azure `/var/lib/weibo-session/token`，属主 `weibo-session`、权限 `0600`。浏览器资料存于 `/var/lib/weibo-session/profile`，不进入仓库或静态目录。真实凭证不得写进命令参数、文档或日志。
+3. 安装 `azure_session/weibo-session.service`。可在 `/etc/weibo-session.env` 设置 `WEIBO_SESSION_USER_ID`；默认维护间隔 `WEIBO_SESSION_INTERVAL_SECONDS=1800`，最小 300 秒。服务只监听 `127.0.0.1:8894`，使用独立无登录权限账号，内存限制 2 GiB。
+4. 把 `azure_session/nginx-location.conf` 包含到现有 HTTPS server 块，提供 `/weibo-session/` 路径。先运行 `nginx -t` 再重载。不要开放 Chromium 调试端口。
+5. NAS 私有文件 `logs/azure-cookie-client.json` 包含 `url`（例如 `https://jinshanweb.com/weibo-session`）和 `token` 两个字段，权限 `0600`。可用 `WEIBO_COOKIE_BROKER_CONFIG` 指定其他私有路径。该文件不得提交。
+
+配置 Azure 后，自动与手动启动共用登录预检：有效则启动；明确过期则尝试获取新 Cookie；连接失败、未知页面和限流暂停本轮尝试并保留原配置。新 Cookie 必须在 NAS 验证成功才原子保存。已有运行或暂停的备份不会另起进程；爬虫使用启动时的配置，运行中失效后由下一次启动重新获取登录态。服务端撤销登录或要求验证时仍需扫码。
+
+Linux 的进程状态直接读取 `/proc`，兼容 Alpine/BusyBox；僵尸进程视为已停止，暂停中的进程也可以正常停止。
+
+`/azure-login`、`/api/azure-session`、截图与操作 API 均需 NAS 后台会话。Azure `/v1/*` 只接受机器凭证，`/healthz` 仅返回服务存活状态。Cookie 只由 Azure 传给 NAS 服务端，NAS 网页 API 不返回明文。媒体路由只允许账号 `img/`、`video/` 下的图片和视频，并在解析符号链接后检查路径。
+
+验证：安装 `requirements-dev.txt` 后运行 `python3 -m unittest discover -s tests -p 'test_*.py'`；覆盖跨出口验证失败时保留配置、认证保护、媒体文件越界和真实进程暂停/继续/停止。
 
 ## 数据同步
 

@@ -135,6 +135,7 @@ body {
 .status-chip.paused { background: #e8f0fe; color: var(--md-primary); }
 .status-chip.completed { background: #e6f4ea; color: var(--md-success); }
 .status-chip.global_waiting { background: #fef7e0; color: #e37400; }
+.status-chip.cookie_attention { background: #fce8e6; color: #b3261e; }
 .status-chip .dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: currentColor;
@@ -1008,6 +1009,9 @@ body {
         <button class="action-button" onclick="refreshCookieAutomatically()">
           <span class="material-icons-outlined">sync</span>自动获取新 Cookie
         </button>
+        <a class="action-button" href="/azure-login" target="_blank" rel="noopener">
+          <span class="material-icons-outlined">qr_code</span>Azure 微博登录
+        </a>
         <button class="action-button primary" onclick="startBackupFromModal()">
           <span class="material-icons-outlined">play_arrow</span>启动备份
         </button>
@@ -1147,6 +1151,10 @@ function showAuthGate(configured) {
 }
 
 function showDashboard() {
+  if (new URLSearchParams(location.search).get('next') === '/azure-login') {
+    location.replace('/azure-login');
+    return;
+  }
   document.getElementById('authGate').hidden = true;
   document.getElementById('appShell').hidden = false;
   setAuthFeedback('');
@@ -1220,8 +1228,9 @@ async function refreshStats() {
   const chip = document.getElementById('statusChip');
   const text = document.getElementById('statusText');
   chip.className = 'status-chip ' + (status.status || 'stopped');
-  const labels = { running: '备份中', paused: '已暂停', completed: '已完成', stopped: '已停止', global_waiting: '全局等待中' };
+  const labels = { running: '备份中', paused: '已暂停', completed: '已完成', stopped: '已停止', global_waiting: '全局等待中', cookie_attention: '登录状态需要处理' };
   text.textContent = labels[status.status] || status.status;
+  chip.title = status.cookie_session?.message || '';
 
   // Progress
   const total = status.total_pages || 0;
@@ -1796,6 +1805,10 @@ async function refreshCookieAutomatically() {
     return;
   } catch (err) {
     serverError = err;
+    if (err.payload?.azure_session_required) {
+      showBackupFeedback(`${err.message}；请点击“Azure 微博登录”处理。`, 'error');
+      return;
+    }
   }
 
   showBackupFeedback('NAS 无法直接读取本机 Chrome，正在询问本机 Cookie 助手...');

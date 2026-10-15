@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Azure 微博登录 · 微博备份</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f7fb;color:#202b3c;font:15px/1.6 system-ui,sans-serif}main{max-width:1150px;margin:32px auto;padding:0 20px}header{display:flex;align-items:center;justify-content:space-between;gap:20px}h1{font-size:25px;margin:0}a{color:#275cc8}p{color:#647084}.panel{background:white;border:1px solid #dde3ed;border-radius:16px;padding:18px;margin:18px 0}.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}button,input{font:inherit;border:1px solid #cbd5e1;border-radius:8px;padding:9px 14px}button{background:white;cursor:pointer;color:#24354f}button.primary{background:#275cc8;color:white;border-color:#275cc8}button:disabled{opacity:.5;cursor:wait}input{min-width:180px;flex:1}#status{font-weight:600}#feedback{min-height:25px;margin-top:10px;white-space:pre-wrap}.error{color:#b3261e}.success{color:#15734c}#frame{display:block;width:100%;height:auto;cursor:crosshair;border:1px solid #e5e7eb;border-radius:8px}#placeholder{padding:80px 15px;text-align:center;color:#6a768b}small{color:#647084} @media(max-width:600px){main{margin:18px auto;padding:0 10px}header{align-items:start}h1{font-size:21px}.panel{padding:12px}}
+</style>
+<main>
+<header><div><h1>Azure 微博登录</h1><p>用微博 App 扫描下方二维码，并在手机上确认登录。</p></div><a href="/">返回备份后台</a></header>
+<section class="panel"><div id="status">正在连接 Azure…</div><div class="toolbar" style="margin-top:12px">
+<button id="reload">重新打开登录页</button><button class="primary" id="sync">登录后同步并启动备份</button></div>
+<div id="feedback" role="status" aria-live="polite"></div></section>
+<section class="panel"><div id="placeholder">正在加载浏览器画面…</div><img id="frame" alt="Azure 上的微博浏览器画面；可以点击画面操作" hidden></section>
+<section class="panel"><small>如果页面要求输入手机号或验证码，先点击画面中的对应输入框，再通过这里输入。也可点击画面切换到扫码登录。</small>
+<div class="toolbar" style="margin-top:12px"><input id="text" type="password" autocomplete="off" maxlength="256" aria-label="向微博页面输入内容" placeholder="手机号、验证码或其他输入"><button id="send">输入到页面</button><button data-key="Tab">Tab</button><button data-key="Backspace">退格</button><button data-key="Enter">回车</button><button data-scroll="up">向上滚动</button><button data-scroll="down">向下滚动</button></div></section>
+</main>
+<script>
+const frame=document.getElementById('frame'),feedback=document.getElementById('feedback');
+let imageUrl='',stopped=false,actionBusy=false;
+function message(text,error=false){feedback.textContent=text;feedback.className=error?'error':'success'}
+async function request(path,payload){const response=await fetch(path,{method:payload===undefined?'GET':'POST',headers:payload===undefined?{}:{'Content-Type':'application/json'},body:payload===undefined?undefined:JSON.stringify(payload),cache:'no-store'});if(response.status===401){location.href='/';throw Error('请先登录备份后台')}const data=await response.json();if(!response.ok||data.ok===false)throw Error(data.message||'操作未完成，请稍后重试');return data}
+async function refreshFrame(){if(stopped||document.hidden)return;const response=await fetch('/api/azure-session/frame',{cache:'no-store'});if(response.status===401){location.href='/';return}if(!response.ok)throw Error('暂时无法读取浏览器画面，请稍后重新打开登录页');const next=URL.createObjectURL(await response.blob());frame.onload=()=>{if(imageUrl)URL.revokeObjectURL(imageUrl);imageUrl=next};frame.src=next;frame.hidden=false;document.getElementById('placeholder').hidden=true}
+async function refreshStatus(){const data=await request('/api/azure-session');const labels={valid:'Azure 已登录，可同步到 NAS',expired:'Azure 登录已失效，请扫码登录',missing:'请在下方登录微博',unknown:'暂时无法确认 Azure 登录状态',rate_limited:'微博暂时限制访问，请稍后重试',verification_required:'请在下方完成微博验证',starting:'浏览器正在启动'};document.getElementById('status').textContent=labels[data.state]||data.message||'正在检查登录状态';if(data.nas?.valid===true&&data.valid)document.getElementById('status').textContent='Azure 与 NAS 登录均已验证'}
+async function action(payload){if(actionBusy)return;actionBusy=true;try{await request('/api/azure-session/action',payload);await refreshFrame()}catch(error){message(error.message,true)}finally{actionBusy=false}}
+frame.addEventListener('click',event=>{const rect=frame.getBoundingClientRect();action({kind:'click',x:(event.clientX-rect.left)*1100/rect.width,y:(event.clientY-rect.top)*820/rect.height})});
+document.getElementById('send').onclick=()=>{const input=document.getElementById('text'),text=input.value;input.value='';if(text)action({kind:'text',text})};
+document.querySelectorAll('[data-key]').forEach(button=>button.onclick=()=>action({kind:'key',key:button.dataset.key}));
+document.querySelectorAll('[data-scroll]').forEach(button=>button.onclick=()=>action({kind:'scroll',direction:button.dataset.scroll}));
+document.getElementById('reload').onclick=async()=>{message('正在打开微博登录页…');try{await request('/api/azure-session/start',{});await refreshFrame();message('请扫码，并在手机上确认登录。')}catch(error){message(error.message,true)}};
+document.getElementById('sync').onclick=async event=>{const button=event.currentTarget;button.disabled=true;message('正在从 Azure 获取登录态，并由 NAS 验证…');try{const result=await request('/api/backup/refresh-cookie',{});message(result.message||'Cookie 已同步');await request('/api/backup/start',{});message('NAS 已验证登录态并启动备份。可以返回后台查看进度。');await refreshStatus()}catch(error){message(error.message,true)}finally{button.disabled=false}};
+async function pollFrame(){try{await refreshFrame()}catch(error){message(error.message,true)}if(!stopped)setTimeout(pollFrame,3000)}
+async function pollStatus(){if(!document.hidden)try{await refreshStatus()}catch(error){document.getElementById('status').textContent=error.message}if(!stopped)setTimeout(pollStatus,10000)}
+addEventListener('pagehide',()=>{stopped=true;if(imageUrl)URL.revokeObjectURL(imageUrl)});
+pollFrame();pollStatus();
+</script>
+</html>

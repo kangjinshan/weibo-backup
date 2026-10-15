@@ -11,53 +11,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-class _FakeFastAPI:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def get(self, *args, **kwargs):
-        def decorator(func):
-            return func
-
-        return decorator
-
-    def post(self, *args, **kwargs):
-        def decorator(func):
-            return func
-
-        return decorator
-
-    def middleware(self, *args, **kwargs):
-        def decorator(func):
-            return func
-
-        return decorator
-
-
-class _FakeJSONResponse:
-    def __init__(self, content, status_code=200):
-        self.body = json.dumps(content).encode("utf-8")
-        self.status_code = status_code
-
-
-fastapi_module = types.ModuleType("fastapi")
-fastapi_module.FastAPI = _FakeFastAPI
-fastapi_module.HTTPException = Exception
-fastapi_module.Request = object
-responses_module = types.ModuleType("fastapi.responses")
-responses_module.FileResponse = object
-responses_module.HTMLResponse = str
-responses_module.JSONResponse = _FakeJSONResponse
-staticfiles_module = types.ModuleType("fastapi.staticfiles")
-staticfiles_module.StaticFiles = object
-sys.modules.setdefault("fastapi", fastapi_module)
-sys.modules.setdefault("fastapi.responses", responses_module)
-sys.modules.setdefault("fastapi.staticfiles", staticfiles_module)
-
 from dashboard import server
 
 
 class DashboardTests(unittest.TestCase):
+    def setUp(self):
+        configured = patch.object(server, "broker_configured", return_value=False)
+        configured.start()
+        self.addCleanup(configured.stop)
+        status = patch.object(server, "COOKIE_SESSION_STATUS", {})
+        status.start()
+        self.addCleanup(status.stop)
+
     def test_weibo_list_returns_oldest_posts_first(self):
         data = {
             "user": {"id": "1234567890"},
@@ -336,6 +301,7 @@ class DashboardTests(unittest.TestCase):
             "cookie": "SUB=valid-cookie",
         }
         with (
+            patch.object(server, "inspect_cookie_health", return_value={"state": "valid", "valid": True}),
             patch.object(server, "read_backup_config", return_value=current_config),
             patch.object(server, "latest_backed_up_date", return_value="2020-03-04"),
             patch.object(server, "today_string", return_value="2026-05-22", create=True),

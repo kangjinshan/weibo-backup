@@ -13,17 +13,24 @@ import secrets
 import signal
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from urllib import request as urllib_request
+from urllib.error import HTTPError
 from urllib.parse import quote, unquote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import RedirectResponse, Response
+
+from cookie_broker_client import BrokerError, CookieBrokerClient
+from cookie_health import classify_page
 
 from sqlite_store import (
     count_weibos as sqlite_count_weibos,
@@ -77,6 +84,9 @@ COOKIE_CHECK_TIMEOUT = 12
 COOKIE_CHECK_DEFAULT_USER_ID = "1639733600"
 COOKIE_BACKUP_SCAN_LIMIT = 40
 DEFAULT_AUTO_BACKUP_INTERVAL_SECONDS = 30 * 60
+BACKUP_LAUNCH_LOCK = threading.Lock()
+CONFIG_LOCK = threading.RLock()
+COOKIE_SESSION_STATUS = {}
 EXCLUDED_DATA_DIRS = {
     "__pycache__",
     "archive",
@@ -86,6 +96,7 @@ EXCLUDED_DATA_DIRS = {
     "scripts",
     "tests",
     "weiboSpider",
+    "azure_session",
 }
 COOKIE_PLACEHOLDER_FRAGMENTS = (
     "PASTE_YOUR_WEIBO_COOKIE",
@@ -237,6 +248,8 @@ async def dashboard_auth_middleware(request: Request, call_next):
         return await call_next(request)
 
     config = read_dashboard_auth_config()
+    if request.url.path == "/azure-login" and not request_is_authenticated(request, config):
+        return RedirectResponse("/?next=/azure-login", status_code=303)
     if not dashboard_auth_configured():
         return JSONResponse(
             {"ok": False, "auth_required": True, "configured": False, "message": "请先设置访问密码"},
@@ -352,25 +365,66 @@ def inspect_cookie_health(cookie: str, probe_url: str, timeout: int = COOKIE_CHE
             final_url = response.geturl()
             text = decode_html_text(response.read(40_000))
             title = html_title(text)
-    except Exception as exc:
+    except HTTPError as exc:
+        result = {**classify_page(exc.url, '', exc.code), "probe_url": probe_url}
+        exc.close()
+        return result
+    except Exception:
         return {
             "state": "unknown",
             "valid": None,
-            "message": f"Cookie 状态检测失败：{exc}",
+            "message": "Cookie 状态检测失败，请稍后重试",
             "probe_url": probe_url,
         }
 
-    redirect_login = any(flag in final_url.lower() for flag in ("login", "passport"))
-    title_login = any(flag in title for flag in ("登录", "通行证", "新浪"))
-    has_profile_info = "基本信息" in text or "资料" in title
-    valid = (not redirect_login) and (not title_login) and has_profile_info
-    return {
-        "state": "valid" if valid else "expired",
-        "valid": valid,
-        "message": "Cookie 有效" if valid else "Cookie 疑似已过期，请自动获取或手动更新",
-        "probe_url": probe_url,
-        "title": title,
-    }
+    return {**classify_page(final_url, text), "probe_url": probe_url}
+
+
+def broker_config_path():
+    return Path(os.environ.get("WEIBO_COOKIE_BROKER_CONFIG", str(LOGS_DIR / "azure-cookie-client.json")))
+
+
+def broker_configured():
+    return broker_config_path().is_file()
+
+
+def set_cookie_session_status(health):
+    global COOKIE_SESSION_STATUS
+    COOKIE_SESSION_STATUS = {"state": health.get("state", "unknown"), "valid": health.get("valid"),
+                             "message": health.get("message", ""), "checked_at": utc_now().isoformat()}
+
+
+def acquire_azure_cookie(current):
+    """Only persist a candidate independently verified from the NAS network."""
+    candidate = CookieBrokerClient(broker_config_path()).cookie()
+    health = inspect_cookie_health(candidate, cookie_probe_url(current))
+    if health.get("valid") is not True:
+        set_cookie_session_status({**health, "message": "Azure Cookie 在 NAS 未通过验证；现有配置已保留，请检查 Azure 登录状态或稍后重试"})
+        return False, health
+    with CONFIG_LOCK:
+        # Reload inside the lock so a simultaneous form save cannot lose fields.
+        latest = read_backup_config()
+        if candidate != latest.get("cookie"):
+            persist_cookie_update(candidate)
+    set_cookie_session_status(health)
+    return True, health
+
+
+def ensure_backup_cookie(config):
+    if not broker_configured():
+        return True
+    health = inspect_cookie_health(config.get("cookie", ""), cookie_probe_url(config))
+    set_cookie_session_status(health)
+    if health.get("valid") is True:
+        return True
+    if health.get("state") not in {"expired", "missing"}:
+        return False
+    try:
+        ok, _ = acquire_azure_cookie(config)
+        return ok
+    except BrokerError as exc:
+        set_cookie_session_status({"state": exc.code, "valid": False, "message": str(exc)})
+        return False
 
 
 def get_chrome_cookie_string(domain_name: str = "weibo.cn") -> tuple[Optional[str], Optional[str]]:
@@ -434,9 +488,10 @@ def persist_cookie_update(next_cookie: str) -> tuple[dict, Path]:
     next_config["cookie"] = next_cookie
     ensure_logs_dir()
     backup_path = CONFIG_PATH.with_suffix(
-        f".before-auto-cookie-{time.strftime('%Y%m%d-%H%M%S')}.json"
+        f".before-auto-cookie-{time.time_ns()}.json"
     )
     backup_path.write_bytes(CONFIG_PATH.read_bytes())
+    backup_path.chmod(0o600)
     write_json_atomic(CONFIG_PATH, next_config)
     return next_config, backup_path
 
@@ -446,9 +501,19 @@ def sqlite_db_path():
 
 
 def write_json_atomic(path: Path, payload: dict):
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=4) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    serialized = json.dumps(payload, ensure_ascii=False, indent=4) + "\n"
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.name + ".", suffix=".tmp", delete=False) as fh:
+            tmp = Path(fh.name)
+            fh.write(serialized)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(path)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 def parse_user_ids(value):
@@ -525,6 +590,13 @@ def read_pid(path: Optional[Path] = None) -> Optional[int]:
 
 
 def process_state(pid: int) -> str:
+    # Alpine/BusyBox ps does not support `-p`. Linux procfs also avoids spawning
+    # another process for every status poll. comm may itself contain spaces.
+    if sys.platform.startswith("linux"):
+        try:
+            return Path(f"/proc/{int(pid)}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except (OSError, ValueError, IndexError):
+            return ""
     try:
         out = subprocess.run(
             ["ps", "-p", str(pid), "-o", "stat="],
@@ -542,7 +614,7 @@ def get_backup_process_status():
     if not pid:
         return {"running": False, "status": "stopped", "pid": None}
     state = process_state(pid)
-    if not state:
+    if not state or state.startswith(("Z", "X")):
         return {"running": False, "status": "stopped", "pid": pid}
     status = "paused" if state.startswith("T") else "running"
     return {"running": True, "status": status, "pid": pid, "state": state}
@@ -722,6 +794,11 @@ def get_spider_status():
     if newest_log_time:
         result["last_log_time"] = datetime.fromtimestamp(
             newest_log_time).strftime("%Y-%m-%d %H:%M:%S")
+
+    if broker_configured():
+        result["cookie_session"] = dict(COOKIE_SESSION_STATUS)
+        if not result["running"] and COOKIE_SESSION_STATUS.get("valid") is not True and COOKIE_SESSION_STATUS:
+            result["status"] = "cookie_attention"
 
     return result
 
@@ -903,7 +980,19 @@ async def media(media_path: str):
     target_path = (DATA_DIR / decoded_path).resolve()
     data_root = DATA_DIR.resolve()
 
-    if not target_path.is_file() or data_root not in target_path.parents:
+    try:
+        relative = target_path.relative_to(data_root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Media not found")
+    parts = relative.parts
+    allowed_extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".heic", ".mp4", ".mov", ".webm", ".m4v"}
+    # Resolve symlinks before validating the account and media directory.
+    allowed = (len(parts) >= 3 and parts[0] not in EXCLUDED_DATA_DIRS
+               and not any(part.startswith(".") for part in parts)
+               and parts[1] in {"img", "video"}
+               and target_path.suffix.lower() in allowed_extensions
+               and any((data_root / parts[0]).glob("[0-9]*.json")))
+    if not allowed or not target_path.is_file():
         raise HTTPException(status_code=404, detail="Media not found")
 
     return FileResponse(target_path)
@@ -970,7 +1059,9 @@ async def backup_config():
     config = read_backup_config()
     default_dates = incremental_backup_dates(config)
     issues = backup_config_issues(config)
-    cookie_status = inspect_cookie_health(config.get("cookie", ""), cookie_probe_url(config))
+    cookie_status = await asyncio.to_thread(inspect_cookie_health, config.get("cookie", ""), cookie_probe_url(config))
+    if broker_configured():
+        set_cookie_session_status(cookie_status)
     return JSONResponse(
         {
             "user_id_list": config.get("user_id_list", []),
@@ -981,6 +1072,7 @@ async def backup_config():
             "write_mode": config.get("write_mode", ["csv", "txt", "json", "sqlite"]),
             "cookie_configured": cookie_is_configured(config),
             "cookie_status": cookie_status,
+            "azure_session_configured": broker_configured(),
             "config_issues": issues,
             "status": get_backup_process_status(),
         }
@@ -989,15 +1081,17 @@ async def backup_config():
 
 @app.post("/api/backup-config")
 async def save_backup_config(payload: dict):
-    current = read_backup_config()
-    next_config = sanitize_backup_config(payload, current)
-    cookie_status = inspect_cookie_health(next_config.get("cookie", ""), cookie_probe_url(next_config))
-    ensure_logs_dir()
-    backup_path = CONFIG_PATH.with_suffix(
-        f".before-dashboard-{time.strftime('%Y%m%d-%H%M%S')}.json"
-    )
-    backup_path.write_bytes(CONFIG_PATH.read_bytes())
-    write_json_atomic(CONFIG_PATH, next_config)
+    with CONFIG_LOCK:
+        current = read_backup_config()
+        next_config = sanitize_backup_config(payload, current)
+        ensure_logs_dir()
+        backup_path = CONFIG_PATH.with_suffix(f".before-dashboard-{time.time_ns()}.json")
+        backup_path.write_bytes(CONFIG_PATH.read_bytes())
+        backup_path.chmod(0o600)
+        write_json_atomic(CONFIG_PATH, next_config)
+    cookie_status = await asyncio.to_thread(inspect_cookie_health, next_config.get("cookie", ""), cookie_probe_url(next_config))
+    if broker_configured():
+        set_cookie_session_status(cookie_status)
     return JSONResponse(
         {
             "ok": True,
@@ -1011,6 +1105,10 @@ async def save_backup_config(payload: dict):
 
 @app.post("/api/backup/refresh-cookie")
 async def refresh_cookie():
+    return await asyncio.to_thread(refresh_cookie_sync)
+
+
+def refresh_cookie_sync():
     try:
         current = read_backup_config()
     except Exception as exc:
@@ -1022,6 +1120,8 @@ async def refresh_cookie():
     probe_url = cookie_probe_url(current)
     current_cookie = str(current.get("cookie") or "")
     current_status = inspect_cookie_health(current_cookie, probe_url)
+    if broker_configured():
+        set_cookie_session_status(current_status)
     if current_status.get("valid") is True:
         return JSONResponse(
             {
@@ -1033,6 +1133,17 @@ async def refresh_cookie():
                 "message": "当前 Cookie 仍然有效，无需更新",
             }
         )
+
+    if broker_configured():
+        try:
+            ok, health = acquire_azure_cookie(current)
+            message = "已从 Azure 更新 Cookie，并通过 NAS 验证" if ok else COOKIE_SESSION_STATUS.get("message")
+        except BrokerError as exc:
+            ok, health, message = False, current_status, str(exc)
+            set_cookie_session_status({"state": exc.code, "valid": False, "message": message})
+        return JSONResponse({"ok": ok, "updated": ok, "source": "azure", "cookie_configured": cookie_is_configured(read_backup_config() if ok else current),
+                             "cookie_status": health, "message": message, "azure_session_required": not ok},
+                            status_code=200 if ok else 409)
 
     browser_cookie, browser_error = get_chrome_cookie_string("weibo.cn")
     if browser_cookie:
@@ -1086,6 +1197,15 @@ async def refresh_cookie():
 
 
 def launch_backup_process():
+    if not BACKUP_LAUNCH_LOCK.acquire(blocking=False):
+        return {"ok": False, "message": "正在检查登录状态或启动备份，请稍后查看"}, 200
+    try:
+        return launch_backup_process_locked()
+    finally:
+        BACKUP_LAUNCH_LOCK.release()
+
+
+def launch_backup_process_locked():
     status = get_backup_process_status()
     if status["running"]:
         return {"ok": False, "status": status, "message": "backup already running"}, 200
@@ -1103,6 +1223,9 @@ def launch_backup_process():
             "message": "启动失败：" + "；".join(issues),
             "config_issues": issues,
         }, 400
+    if not ensure_backup_cookie(config):
+        return {"ok": False, "message": COOKIE_SESSION_STATUS.get("message", "微博登录需要处理"),
+                "cookie_status": dict(COOKIE_SESSION_STATUS), "azure_session_required": True}, 409
     ensure_logs_dir()
     command = spider_command()
     try:
@@ -1148,7 +1271,7 @@ def automatic_backup_interval_seconds():
 async def run_automatic_backup_scheduler(interval_seconds):
     while True:
         try:
-            payload, status_code = launch_backup_process()
+            payload, status_code = await asyncio.to_thread(launch_backup_process)
             if not payload.get("ok"):
                 LOGGER.warning(
                     "Automatic backup attempt skipped or failed (%s): %s",
@@ -1164,7 +1287,7 @@ async def run_automatic_backup_scheduler(interval_seconds):
 
 @app.post("/api/backup/start")
 async def start_backup():
-    payload, status_code = launch_backup_process()
+    payload, status_code = await asyncio.to_thread(launch_backup_process)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -1201,7 +1324,52 @@ async def stop_backup():
     if not status["running"]:
         return JSONResponse({"ok": False, "status": status, "message": "backup is not running"})
     signal_backup_process(int(status["pid"]), signal.SIGTERM)
+    if status["status"] == "paused":
+        with suppress(ProcessLookupError):
+            signal_backup_process(int(status["pid"]), signal.SIGCONT)
     return JSONResponse({"ok": True, "status": "stopping", "pid": status["pid"]})
+
+
+@app.get("/azure-login", response_class=HTMLResponse)
+async def azure_login_page():
+    return HTMLResponse((Path(__file__).parent / "static" / "azure-login.html").read_text(encoding="utf-8"),
+                        headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"})
+
+
+@app.get("/api/azure-session")
+async def azure_session_status():
+    try:
+        status = await asyncio.to_thread(lambda: CookieBrokerClient(broker_config_path()).status())
+        return JSONResponse({**status, "nas": dict(COOKIE_SESSION_STATUS)}, headers={"Cache-Control": "no-store"})
+    except BrokerError as exc:
+        return JSONResponse({"configured": broker_configured(), "state": exc.code, "message": str(exc)}, status_code=503)
+
+
+@app.post("/api/azure-session/start")
+async def azure_session_start():
+    return await proxy_azure_action("/v1/login/start", {})
+
+
+@app.post("/api/azure-session/action")
+async def azure_session_action(payload: dict):
+    return await proxy_azure_action("/v1/login/action", payload)
+
+
+async def proxy_azure_action(path, payload):
+    try:
+        await asyncio.to_thread(lambda: CookieBrokerClient(broker_config_path()).request(path, payload))
+        return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+    except BrokerError as exc:
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=503)
+
+
+@app.get("/api/azure-session/frame")
+async def azure_session_frame():
+    try:
+        image = await asyncio.to_thread(lambda: CookieBrokerClient(broker_config_path()).request("/v1/login/frame", binary=True))
+        return Response(image, media_type="image/png", headers={"Cache-Control": "no-store"})
+    except BrokerError as exc:
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=503)
 
 
 if __name__ == "__main__":
